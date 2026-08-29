@@ -43,6 +43,16 @@ export function useHealSession() {
 
   const eventSourceRef = useRef<EventSource | null>(null);
 
+  const mapPatchEntries = (patches: any[], fallbackDiff?: string): DiffFileEntry[] =>
+    patches.map((p: any) => ({
+      filePath: p.filePath,
+      originalContent: p.originalContent || '',
+      patchedContent: p.patchedContent || '',
+      diff: p.diff || fallbackDiff,
+      linesAdded: p.linesAdded,
+      linesRemoved: p.linesRemoved,
+    }));
+
   const beginPhase = useCallback((id: PhaseId, at: number = Date.now()) => {
     setPhases((prev) => {
       const open = prev.find((p) => p.endedAt === undefined);
@@ -135,31 +145,17 @@ export function useHealSession() {
         break;
       case 'patch.generated':
       case 'patch.synthesized':
+      case 'diff.generated': {
         setPatchResult(payload.result || payload);
-        if (payload.result?.patches?.length > 0) {
-          setDiffFiles(
-            payload.result.patches.map((p: any) => ({
-              filePath: p.filePath,
-              originalContent: p.originalContent || '',
-              patchedContent: p.patchedContent || '',
-              diff: p.diff || payload.diff,
-              linesAdded: p.linesAdded,
-              linesRemoved: p.linesRemoved,
-            }))
-          );
-        } else if (payload.filePatches?.length > 0) {
-          setDiffFiles(
-            payload.filePatches.map((p: any) => ({
-              filePath: p.filePath,
-              originalContent: p.originalContent || '',
-              patchedContent: p.patchedContent || '',
-              diff: p.diff,
-              linesAdded: p.linesAdded,
-              linesRemoved: p.linesRemoved,
-            }))
-          );
+        const patches =
+          payload.patches ??
+          payload.result?.patches ??
+          payload.filePatches;
+        if (patches?.length > 0) {
+          setDiffFiles(mapPatchEntries(patches, payload.diff ?? payload.unifiedDiff));
         }
         break;
+      }
       case 'qodo.scorecard':
         setQodoScorecard(payload);
         // Scoring runs after verification and before the gate; it earns its own
@@ -223,6 +219,7 @@ export function useHealSession() {
       'diagnostic.completed',
       'patch.generated',
       'patch.synthesized',
+      'diff.generated',
       'qodo.scorecard',
       'verification.completed',
       'tool.approval_required',
