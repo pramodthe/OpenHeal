@@ -10,7 +10,8 @@ import type {
   ScopeCreepAssessment,
 } from '../types.ts';
 import { eventBus } from '../event-bus.ts';
-import { applyScenarioHeuristicPatch } from '../../heal/heuristic-patch.ts';
+import { applyScenarioHeuristicPatch, allowHeuristicPatches } from '../../heal/heuristic-patch.ts';
+import { resolveBundledScenarioDir } from '../../heal/scenarios.ts';
 import { toRepoRelativePath } from '../../heal/sandbox-files.ts';
 import type { LLMConfig } from '../../llm/provider.ts';
 
@@ -25,7 +26,8 @@ export class PatchSynthesizerSubagent {
     originalFiles: Map<string, string> | Record<string, string>,
     attemptNumber: number = 1,
     customPatchFn?: (filePath: string, original: string, diagnostic: DiagnosticReport) => string,
-    llmConfig?: LLMConfig
+    llmConfig?: LLMConfig,
+    scenarioId?: string
   ): Promise<PatchSynthesisResult> {
     const startTime = Date.now();
     const turnId = `turn_patch_${Date.now()}`;
@@ -38,53 +40,80 @@ export class PatchSynthesizerSubagent {
       turnId
     );
 
-    const implicatedFiles = new Set([
-      diagnostic.primaryRootCauseLocation.filePath,
-      ...diagnostic.secondaryLocations.map((l) => l.filePath),
-    ]);
+    const implicatedFiles = new Set<string>();
+    const addImplicated = (filePath?: string) => {
+      if (!filePath || filePath === 'unknown') return;
+      implicatedFiles.add(toRepoRelativePath(filePath));
+    };
+
+    addImplicated(diagnostic.primaryRootCauseLocation.filePath);
+    for (const location of diagnostic.secondaryLocations) addImplicated(location.filePath);
+    for (const frame of diagnostic.stackTraceFrames ?? []) addImplicated(frame.filePath);
+
+    if (scenarioId && resolveBundledScenarioDir(scenarioId)) {
+      for (const source of bundledScenarioSourceFiles(scenarioId)) {
+        implicatedFiles.add(source);
+      }
+    }
 
     const patches: FilePatch[] = [];
+    const patchedPaths = new Set<string>();
 
-    for (const filePath of implicatedFiles) {
-      if (!filePath || filePath === 'unknown') continue;
-      if (
-        /(?:^|\/)(?:tests?\/|_tests?\.|\.test\.|\.spec\.|__tests__)/i.test(filePath) &&
-        toRepoRelativePath(filePath) !== toRepoRelativePath(diagnostic.primaryRootCauseLocation.filePath)
-      ) {
+    for (const relativePath of implicatedFiles) {
+      if (!relativePath) continue;
+      if (/(?:^|\/)(?:tests?\/|__tests__|\.test\.|\.spec\.)/i.test(relativePath)) {
         continue;
       }
+      if (patchedPaths.has(relativePath)) continue;
 
-      const originalContent = this.getFileContent(filePath, originalFiles);
+      const originalContent = this.getFileContent(relativePath, originalFiles);
       if (!originalContent) continue;
+      patchedPaths.add(relativePath);
 
       eventBus.emitDelta(
         sessionId,
         threadId,
         'agent.thought.delta',
-        `Synthesizing minimal bugfix for ${filePath}...\n`,
+        `Synthesizing minimal bugfix for ${relativePath}...\n`,
         turnId
       );
 
-      // Generate patched content via custom function, live LLM, or standard heuristic fix
+      // Generate patched content via custom function, bundled heuristic, live LLM, or fallback
       let patchedContent = '';
+      const bundledLab = Boolean(scenarioId && resolveBundledScenarioDir(scenarioId));
+
       if (customPatchFn) {
-        patchedContent = customPatchFn(filePath, originalContent, diagnostic);
+        patchedContent = customPatchFn(relativePath, originalContent, diagnostic);
+      } else if (bundledLab) {
+        patchedContent = applyScenarioHeuristicPatch(relativePath, originalContent, scenarioId);
+        if (patchedContent === originalContent) {
+          patchedContent = this.applyStandardHeuristicPatch(
+            relativePath,
+            originalContent,
+            diagnostic,
+            scenarioId
+          );
+        }
       } else {
         try {
           const { LiveLLMProvider } = await import('../../llm/provider.ts');
           const llmProvider = new LiveLLMProvider(llmConfig);
           const llmRes = await llmProvider.synthesizeRealPatch({
             language: diagnostic.frameworkDetected || 'python',
-            filePath,
+            filePath: relativePath,
             originalContent,
             failingLog: diagnostic.primaryFailureMessage || diagnostic.rawLogExcerpt,
+            scenarioId,
           });
-          patchedContent = llmRes.patchedCode || this.applyStandardHeuristicPatch(filePath, originalContent, diagnostic);
+          patchedContent =
+            llmRes.patchedCode ||
+            this.applyStandardHeuristicPatch(relativePath, originalContent, diagnostic, scenarioId);
         } catch {
           patchedContent = this.applyStandardHeuristicPatch(
-            filePath,
+            relativePath,
             originalContent,
-            diagnostic
+            diagnostic,
+            scenarioId
           );
         }
       }
@@ -92,7 +121,6 @@ export class PatchSynthesizerSubagent {
       // Sanitize output
       patchedContent = this.sanitizePatchOutput(patchedContent);
 
-      const relativePath = toRepoRelativePath(filePath);
       const syntaxCheck = this.validateSyntax(relativePath, patchedContent);
       const diff = this.generateUnifiedDiff(relativePath, originalContent, patchedContent);
       const diffStats = this.calculateDiffStats(diff);
@@ -159,24 +187,25 @@ export class PatchSynthesizerSubagent {
     if (!files) return '';
     const clean = filePath.replace(/^\.\//, '');
     const stripped = clean.replace(/^\/workspace\//, '').replace(/^\/app\//, '').replace(/^\/home\/[^\/]+\//, '');
+    const relative = toRepoRelativePath(filePath);
+
+    const tryKeys = [relative, filePath, clean, stripped].filter(Boolean);
 
     if (files instanceof Map) {
-      if (files.has(filePath)) return files.get(filePath)!;
-      if (files.has(clean)) return files.get(clean)!;
-      if (files.has(stripped)) return files.get(stripped)!;
+      for (const key of tryKeys) {
+        if (files.has(key)) return files.get(key)!;
+      }
       for (const [k, v] of files.entries()) {
-        const cleanK = k.replace(/^\.\//, '');
-        if (clean.endsWith(cleanK) || cleanK.endsWith(clean) || stripped.endsWith(cleanK) || cleanK.endsWith(stripped)) {
+        if (k === relative || k.endsWith(`/${relative}`) || relative.endsWith(`/${k}`)) {
           return v;
         }
       }
     } else if (typeof files === 'object') {
-      if (filePath in files) return files[filePath];
-      if (clean in files) return files[clean];
-      if (stripped in files) return files[stripped];
+      for (const key of tryKeys) {
+        if (key in files) return files[key];
+      }
       for (const [k, v] of Object.entries(files)) {
-        const cleanK = k.replace(/^\.\//, '');
-        if (clean.endsWith(cleanK) || cleanK.endsWith(clean) || stripped.endsWith(cleanK) || cleanK.endsWith(stripped)) {
+        if (k === relative || k.endsWith(`/${relative}`) || relative.endsWith(`/${k}`)) {
           return v;
         }
       }
@@ -417,16 +446,17 @@ export class PatchSynthesizerSubagent {
   private applyStandardHeuristicPatch(
     filePath: string,
     original: string,
-    diagnostic: DiagnosticReport
+    diagnostic: DiagnosticReport,
+    scenarioId?: string
   ): string {
     try {
-      const scenarioPatched = applyScenarioHeuristicPatch(filePath, original);
+      const scenarioPatched = applyScenarioHeuristicPatch(filePath, original, scenarioId);
       if (scenarioPatched !== original) return scenarioPatched;
     } catch {
       // fall through to generic heuristics
     }
 
-    if (process.env.DEMO_OFFLINE !== 'true' && process.env.NODE_ENV !== 'test') {
+    if (!allowHeuristicPatches(scenarioId)) {
       return original;
     }
 
@@ -460,3 +490,16 @@ export class PatchSynthesizerSubagent {
 
 export const patchSynthesizerSubagent = new PatchSynthesizerSubagent();
 export const createPatchSynthesizer = () => new PatchSynthesizerSubagent();
+
+function bundledScenarioSourceFiles(scenarioId: string): string[] {
+  switch (scenarioId) {
+    case 'python-calculator':
+      return ['calculator/calculator.py'];
+    case 'node-api-cache':
+      return ['src/cache.ts'];
+    case 'rust-parser':
+      return ['src/parser.rs'];
+    default:
+      return [];
+  }
+}

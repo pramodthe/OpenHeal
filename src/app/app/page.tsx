@@ -1,150 +1,64 @@
 'use client';
 
-import React, { useState } from 'react';
-import SwarmTimeline from '@/components/SwarmTimeline';
-import MonacoDiffViewer from '@/components/MonacoDiffViewer';
-import TerminalLogs from '@/components/TerminalLogs';
-import GlowingApprovalCard from '@/components/GlowingApprovalCard';
-import ScenarioSelector from '@/components/ScenarioSelector';
-import { HealMark } from '@/components/HealMark';
-import { SCENARIO_CATALOG, ScenarioItem } from '@/lib/scenarios-catalog';
-import { useHealSession } from '@/hooks/useHealSession';
-import { ArrowLeft } from 'lucide-react';
+import React from 'react';
 import Link from 'next/link';
+import { ArrowRight } from 'lucide-react';
+import { HealMark } from '@/components/HealMark';
+import { GitHubConnectButton } from '@/components/GitHubConnectButton';
+import { ConnectedReposPanel } from '@/components/ConnectedReposPanel';
+import { RunsTable } from '@/components/RunsTable';
 
-export default function AppPage() {
-  const [scenarios] = useState<ScenarioItem[]>(SCENARIO_CATALOG);
-  const [selectedScenario, setSelectedScenario] = useState<ScenarioItem>(SCENARIO_CATALOG[0]);
-  const {
-    sessionId,
-    sessionStatus,
-    isLoading,
-    isStreaming,
-    logs,
-    diagnosticReport,
-    patchResult,
-    diffFiles,
-    qodoScorecard,
-    verificationReport,
-    approvalPayload,
-    pullRequest,
-    errorMessage,
-    setLogs,
-    handleStartHeal,
-    handleApprove,
-    handleReject,
-    resetSession,
-  } = useHealSession();
-
+export default function DashboardPage() {
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[#07110d] text-slate-100">
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-emerald-500/15 bg-black/30 px-4">
-        <div className="flex items-center gap-4">
-          <Link href="/" className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-emerald-300">
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Home
-          </Link>
-          <div className="flex items-center gap-2 text-emerald-300">
+    <div className="min-h-screen bg-paper">
+      <header className="border-b border-rule bg-card">
+        <nav className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-3.5">
+          <Link href="/" className="flex items-center gap-2 text-ink">
             <HealMark className="h-5 w-5" />
-            <span className="text-sm font-semibold text-white">Mission control</span>
-          </div>
-          <span className="hidden font-mono text-[10px] uppercase tracking-widest text-slate-500 md:inline">
-            {sessionStatus === 'IDLE' ? 'waiting for a failing suite' : sessionStatus.replaceAll('_', ' ').toLowerCase()}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          {sessionId && (
-            <button
-              onClick={resetSession}
-              className="rounded-md border border-slate-700 px-2.5 py-1 font-mono text-[10px] text-slate-300 hover:border-emerald-500/40"
+            <span className="t-display text-[17px]">OpenHeal</span>
+          </Link>
+          <div className="flex items-center gap-3">
+            <GitHubConnectButton />
+            <Link
+              href="/app/lab"
+              className="rounded border border-rule-strong bg-card px-3 py-1.5 text-[13px] text-ink hover:bg-paper-2"
             >
-              Reset
-            </button>
-          )}
-        </div>
+              Lab runs
+            </Link>
+          </div>
+        </nav>
       </header>
 
-      <main className="flex min-h-0 flex-1">
-        <aside className="flex w-[380px] shrink-0 flex-col overflow-y-auto border-r border-slate-800 bg-black/20">
-          <div className="border-b border-slate-800 p-3">
-            <p className="mb-2 font-mono text-[10px] uppercase tracking-widest text-emerald-500/70">Patient</p>
-            <ScenarioSelector
-              scenarios={scenarios}
-              selectedScenarioId={selectedScenario.id}
-              onSelectScenario={setSelectedScenario}
-              onStartHeal={handleStartHeal}
-              isLoading={isLoading}
-            />
-          </div>
-          <div className="flex-1 p-3">
-            <p className="mb-2 font-mono text-[10px] uppercase tracking-widest text-emerald-500/70">Heal loop</p>
-            <SwarmTimeline
-              status={sessionStatus}
-              diagnosticReport={diagnosticReport}
-              patchResult={patchResult}
-              qodoScorecard={qodoScorecard}
-              verificationReport={verificationReport}
-              pullRequest={pullRequest}
-              errorMessage={errorMessage}
-            />
-          </div>
-        </aside>
+      <main className="mx-auto max-w-6xl space-y-6 px-5 py-8">
+        <section>
+          <p className="t-label">Agent swarm PR review</p>
+          <h1 className="t-display mt-2 text-[32px] leading-tight">Your repositories and review runs</h1>
+          <p className="mt-3 max-w-2xl text-[15px] text-ink-2">
+            Connect GitHub, watch a repository, and OpenHeal&apos;s swarm (BuildOps → Explorer → Diagnostic →
+            Reporter) runs automatically on every pull request — then posts evidence on the PR.
+          </p>
+        </section>
 
-        <section className="flex min-w-0 flex-1 flex-col bg-[#050c09]">
-          <div className="flex min-h-0 flex-1 flex-col border-b border-slate-800">
-            <div className="flex shrink-0 items-center justify-between border-b border-slate-800 px-4 py-2">
-              <h2 className="font-mono text-[10px] uppercase tracking-widest text-slate-500">Failing vs healed</h2>
-              {qodoScorecard && (
-                <span className="font-mono text-[10px] text-emerald-400">
-                  Qodo {qodoScorecard.overallScore}/100
-                </span>
-              )}
-            </div>
-            <div className="relative min-h-0 flex-1">
-              <MonacoDiffViewer
-                files={
-                  diffFiles.length > 0
-                    ? diffFiles
-                    : [
-                        {
-                          filePath: selectedScenario.targetFiles?.[0] || 'no file yet',
-                          originalContent: '// Start a heal. The failing source lands here.',
-                          patchedContent: '// The proposed patch lands here after synthesis.',
-                          linesAdded: 0,
-                          linesRemoved: 0,
-                        },
-                      ]
-                }
-                qodoScore={qodoScorecard?.overallScore || 0}
-                qodoGrade={qodoScorecard?.grade || '-'}
-              />
-              {approvalPayload && (
-                <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 p-6 backdrop-blur-sm">
-                  <div className="w-full max-w-2xl">
-                    <GlowingApprovalCard
-                      sessionId={sessionId}
-                      resumeToken={approvalPayload.resumeToken || 'token_demo'}
-                      toolCallId={approvalPayload.toolCallId}
-                      prDetails={approvalPayload.parameters}
-                      qodoScore={qodoScorecard?.overallScore || 0}
-                      qodoGrade={qodoScorecard?.grade || '-'}
-                      verificationPassed={verificationReport?.overallStatus === 'PASSED'}
-                      onApprove={handleApprove}
-                      onReject={handleReject}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="flex h-[32%] min-h-[180px] shrink-0 flex-col">
-            <div className="border-b border-slate-800 px-4 py-2 font-mono text-[10px] uppercase tracking-widest text-slate-500">
-              Sandbox log
-            </div>
-            <div className="min-h-0 flex-1">
-              <TerminalLogs logs={logs} onClearLogs={() => setLogs([])} isStreaming={isStreaming} />
-            </div>
-          </div>
+        <div className="grid gap-6 lg:grid-cols-2">
+          <ConnectedReposPanel />
+          <RunsTable />
+        </div>
+
+        <section className="rounded border border-rule bg-card p-4">
+          <h2 className="t-label mb-2">How it works</h2>
+          <ol className="space-y-2 text-[13px] text-ink-2">
+            <li>1. Connect GitHub and toggle <strong>Watch PRs</strong> on a repository.</li>
+            <li>2. Open or update a pull request — Composio webhook starts a swarm run.</li>
+            <li>3. Agents build the app, explore flows, diagnose root causes, comment on the PR.</li>
+            <li>4. Open a run from the table to watch the live swarm timeline.</li>
+          </ol>
+          <Link
+            href="/app/lab"
+            className="mt-4 inline-flex items-center gap-2 text-[13px] font-medium text-signal hover:underline"
+          >
+            Try a manual lab run
+            <ArrowRight className="h-4 w-4" />
+          </Link>
         </section>
       </main>
     </div>

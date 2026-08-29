@@ -7,7 +7,7 @@ import { runHealOnHarness } from '../trueforge/heal-agent.ts';
 import { resolveCredentials, type HealLaunchCredentials } from './credentials.ts';
 import { authenticatedCloneUrl, isPlaceholderRepo, parseGitHubRepo } from './github.ts';
 import { collectRepoFiles, overlayCustomCode } from './sandbox-files.ts';
-import { defaultTestCommand, resolveBundledScenarioDir } from './scenarios.ts';
+import { defaultTestCommand, languageForScenario, resolveBundledScenarioDir, testCommandForScenario } from './scenarios.ts';
 import { registerSessionSandbox } from './sandbox-registry.ts';
 
 export interface HealStartInput extends HealLaunchCredentials {
@@ -26,14 +26,14 @@ export interface HealStartInput extends HealLaunchCredentials {
 
 export async function startHealPipeline(input: HealStartInput) {
   const creds = resolveCredentials(input);
-  const language = normalizeLanguage(input.language);
+  const language = normalizeLanguage(input.language ?? languageForScenario(input.scenarioId));
   const sessionId = input.sessionId || `sess_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const repoUrl = input.repoUrl || 'https://github.com/openheal-demo/python-calculator';
   const parsedRepo = parseGitHubRepo(repoUrl);
-  const testCommand = defaultTestCommand(language, input.testCommand);
-
-  const sandbox = await provisionSandbox(language, creds.daytonaKey, input.scenarioId);
-  registerSessionSandbox(sessionId, sandbox);
+  const testCommand =
+    input.testCommand?.trim() ||
+    testCommandForScenario(input.scenarioId) ||
+    defaultTestCommand(language, input.testCommand);
 
   await harness.startSession(
     {
@@ -62,6 +62,44 @@ export async function startHealPipeline(input: HealStartInput) {
   };
 
   try {
+    const bundledDir = resolveBundledScenarioDir(input.scenarioId);
+    let harnessRun: { started: boolean; reason?: string } = { started: false };
+
+    if (bundledDir) {
+      // Bundled lab scenarios ship as local fixtures — the placeholder GitHub URLs
+      // are not real repos, so TrueForge's remote sandbox cannot clone them.
+      eventBus.emitEvent(sessionId, threadId, 'agent.status', {
+        agent: 'orchestrator',
+        status: 'running',
+        message: `Bundled lab scenario "${input.scenarioId}" — using local workspace (${bundledDir}).`,
+      });
+    } else {
+      // TrueForge owns its own sandbox — try the harness before provisioning a local one.
+      harnessRun = await runHealOnHarness({
+        sessionId,
+        threadId,
+        repoUrl,
+        testCommand,
+        composioUserId: creds.composioUserId,
+        model: creds.model,
+        daytonaKey: creds.daytonaKey,
+        triggerPrompt: input.triggerPrompt,
+      });
+
+      if (harnessRun.started) {
+        return sessionManager.getRequiredSession(sessionId);
+      }
+
+      eventBus.emitEvent(sessionId, threadId, 'agent.status', {
+        agent: 'orchestrator',
+        status: 'running',
+        message: `TrueForge did not take the run (${harnessRun.reason}). Falling back to the local swarm.`,
+      });
+    }
+
+    const sandbox = await provisionSandbox(language, creds.daytonaKey, input.scenarioId);
+    registerSessionSandbox(sessionId, sandbox);
+
     eventBus.emitEvent(sessionId, threadId, 'agent.status', {
       agent: 'orchestrator',
       status: 'running',
@@ -99,34 +137,11 @@ export async function startHealPipeline(input: HealStartInput) {
     const repoFiles = await collectRepoFiles(sandbox);
     emitLog(`indexed ${repoFiles.size} source files for diagnostic analysis\n`);
 
-    // TrueForge drives the repair: its own sandbox, its own subagents, and the
-    // GitHub MCP write-approval gate. The local swarm below is only a fallback
-    // for when the harness is unreachable.
-    const harnessRun = await runHealOnHarness({
-      sessionId,
-      threadId,
-      repoUrl,
-      testCommand,
-      composioUserId: creds.composioUserId,
-      model: creds.model,
-      daytonaKey: creds.daytonaKey,
-      triggerPrompt: input.triggerPrompt,
-    });
-
-    if (harnessRun.started) {
-      return sessionManager.getRequiredSession(sessionId);
-    }
-
-    eventBus.emitEvent(sessionId, threadId, 'agent.status', {
-      agent: 'orchestrator',
-      status: 'running',
-      message: `TrueForge did not take the run (${harnessRun.reason}). Falling back to the local swarm — this path does NOT use the harness.`,
-    });
-
     await harness.runAutonomousTurnLoop(sessionId, {
       sandbox: sandbox as never,
       repoFiles,
       testCommand,
+      scenarioId: input.scenarioId,
       llmConfig: {
         apiKey: creds.openaiKey,
         provider: creds.llmProvider,
@@ -155,9 +170,10 @@ async function provisionSandbox(
   apiKey?: string,
   scenarioId?: string
 ): Promise<ISandboxInstance> {
+  const bundledDir = resolveBundledScenarioDir(scenarioId);
   const client = new DaytonaClient({
     apiKey,
-    mode: apiKey ? 'auto' : 'mock',
+    mode: bundledDir || !apiKey ? 'mock' : 'auto',
   });
   await client.init();
   return client.createSandbox({

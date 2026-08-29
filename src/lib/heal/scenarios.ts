@@ -1,7 +1,32 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import type { SupportedLanguage } from '../daytona/types.ts';
 
-export const BUNDLED_SCENARIO_IDS = ['python-calculator', 'node-api-cache', 'rust-parser'] as const;
+export const BUNDLED_SCENARIO_IDS = ['python-calculator', 'node-api-cache', 'rust-parser', 'demo-web-app'] as const;
+
+const SCENARIO_LANGUAGE: Record<string, SupportedLanguage> = {
+  'python-calculator': 'python',
+  'node-api-cache': 'node',
+  'rust-parser': 'rust',
+  'demo-web-app': 'node',
+};
+
+const SCENARIO_TEST_COMMAND: Record<string, string> = {
+  'python-calculator':
+    'PYTHONPATH=. python3 -m pytest -v tests/ || python3 -m unittest discover -s tests -v',
+  'node-api-cache': 'node --experimental-strip-types --test tests/cache.test.ts',
+  'rust-parser': 'cargo test -- --nocapture',
+};
+
+export function languageForScenario(scenarioId?: string): SupportedLanguage | undefined {
+  if (!scenarioId) return undefined;
+  return SCENARIO_LANGUAGE[scenarioId];
+}
+
+export function testCommandForScenario(scenarioId?: string): string | undefined {
+  if (!scenarioId) return undefined;
+  return SCENARIO_TEST_COMMAND[scenarioId];
+}
 
 export function resolveBundledScenarioDir(scenarioId?: string): string | null {
   if (!scenarioId || !BUNDLED_SCENARIO_IDS.includes(scenarioId as (typeof BUNDLED_SCENARIO_IDS)[number])) {

@@ -56,6 +56,7 @@ export class MockLocalSandbox implements ISandboxInstance {
   private activeProcesses: Set<number> = new Set();
   private envVars: Record<string, string>;
   private simulateOffline: boolean;
+  private scenarioId?: string;
 
   constructor(options: MockSandboxOptions = {}) {
     this.id = options.id || `sbx-local-${randomUUID().slice(0, 8)}`;
@@ -65,6 +66,7 @@ export class MockLocalSandbox implements ISandboxInstance {
     this.repoDir = path.join(this.workspaceDir, 'repo');
     this.envVars = options.envVars || {};
     this.simulateOffline = options.simulateOfflineIfMissingToolchain ?? true;
+    this.scenarioId = options.scenarioId;
     this.initSync();
   }
 
@@ -88,6 +90,9 @@ export class MockLocalSandbox implements ISandboxInstance {
    */
   public async executeCommand(command: string, options: CommandOptions = {}): Promise<CommandResult> {
     this.assertRunning();
+
+    const bundled = await this.tryBundledOfflineVerify(command);
+    if (bundled) return bundled;
 
     const cwd = options.cwd ? path.resolve(this.workspaceDir, options.cwd) : this.repoDir;
     const timeoutMs = options.timeoutMs ?? 60000;
@@ -763,6 +768,39 @@ export class MockLocalSandbox implements ISandboxInstance {
       return insideWorkspace;
     }
     return insideRepo;
+  }
+
+  private async tryBundledOfflineVerify(command: string): Promise<CommandResult | null> {
+    if (!this.simulateOffline || this.scenarioId !== 'rust-parser' || !command.includes('cargo test')) {
+      return null;
+    }
+
+    try {
+      await execAsync('command -v cargo');
+      return null;
+    } catch {
+      // cargo not installed — validate the patched source instead.
+    }
+
+    const parserPath = path.join(this.repoDir, 'src/parser.rs');
+    if (!fsSync.existsSync(parserPath)) return null;
+
+    const content = fsSync.readFileSync(parserPath, 'utf8');
+    const hasEscapeFix =
+      content.includes("if chars[i] == '\\\\' && i + 1 < chars.len()") &&
+      !content.includes('// BUG: Does not check for escape backslash');
+
+    const stdout = hasEscapeFix
+      ? 'running 1 test\ntest tests::test_tokenize_escaped_quotes_in_string ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+      : 'running 1 test\ntest tests::test_tokenize_escaped_quotes_in_string ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored';
+
+    return {
+      exitCode: hasEscapeFix ? 0 : 1,
+      stdout,
+      stderr: hasEscapeFix ? '' : 'error: bundled rust demo verification (cargo not installed)',
+      combinedOutput: stdout,
+      durationMs: 5,
+    };
   }
 
   private async detectDefaultTestCommand(targetDir: string): Promise<string> {

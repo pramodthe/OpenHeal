@@ -5,6 +5,11 @@
  */
 
 import { allowHeuristicPatches, applyScenarioHeuristicPatch } from '../heal/heuristic-patch.ts';
+import {
+  defaultModelForProvider,
+  modelBelongsToProvider,
+  resolveModelForProvider,
+} from '../heal/credentials.ts';
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
@@ -32,12 +37,31 @@ export class LiveLLMProvider {
   private config: LLMConfig;
 
   constructor(config: LLMConfig = {}) {
+    const provider =
+      config.provider ||
+      (process.env.ANTHROPIC_API_KEY
+        ? 'anthropic'
+        : process.env.GEMINI_API_KEY
+          ? 'gemini'
+          : 'openai');
+    const model = resolveModelForProvider(config.model || 'gpt-5.6-luna', provider);
+
     this.config = {
-      apiKey: config.apiKey || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY,
-      provider: config.provider || (process.env.ANTHROPIC_API_KEY ? 'anthropic' : process.env.GEMINI_API_KEY ? 'gemini' : 'openai'),
-      model: config.model || 'gpt-5.6-luna',
+      apiKey:
+        config.apiKey ||
+        process.env.OPENAI_API_KEY ||
+        process.env.ANTHROPIC_API_KEY ||
+        process.env.GEMINI_API_KEY,
+      provider,
+      model,
       temperature: config.temperature ?? 0.2,
     };
+  }
+
+  private modelFor(provider: LLMConfig['provider']): string {
+    const active = provider || this.config.provider || 'openai';
+    const candidate = this.config.model || defaultModelForProvider(active);
+    return modelBelongsToProvider(candidate, active) ? candidate : defaultModelForProvider(active);
   }
 
   /**
@@ -85,6 +109,7 @@ export class LiveLLMProvider {
     originalContent: string;
     failingLog: string;
     testCommand?: string;
+    scenarioId?: string;
   }): Promise<LLMPatchResponse> {
     const prompt = `You are OpenHeal, an expert AI software engineer fixing a failing test.
 TASK: Analyze the failing log and the original file, then provide a minimal, surgically scoped bug fix. DO NOT refactor unrelated code.
@@ -152,7 +177,7 @@ Return a valid JSON object ONLY with the following schema:
         'Authorization': `Bearer ${this.config.apiKey}`,
       },
       body: JSON.stringify({
-        model: this.config.model || 'gpt-5.6-luna',
+        model: this.modelFor('openai'),
         messages: [{ role: 'user', content: prompt }],
         stream: true,
       }),
@@ -192,7 +217,7 @@ Return a valid JSON object ONLY with the following schema:
         'Authorization': `Bearer ${this.config.apiKey}`,
       },
       body: JSON.stringify({
-        model: this.config.model || 'gpt-5.6-luna',
+        model: this.modelFor('openai'),
         messages: [{ role: 'user', content: prompt }],
         response_format: { type: 'json_object' },
       }),
@@ -211,7 +236,7 @@ Return a valid JSON object ONLY with the following schema:
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
+        model: this.modelFor('anthropic'),
         max_tokens: 4000,
         messages: [{ role: 'user', content: prompt }],
         stream: true,
@@ -251,7 +276,7 @@ Return a valid JSON object ONLY with the following schema:
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
+        model: this.modelFor('anthropic'),
         max_tokens: 4000,
         messages: [{ role: 'user', content: prompt }],
       }),
@@ -270,7 +295,7 @@ Return a valid JSON object ONLY with the following schema:
 
   private async callGemini(prompt: string): Promise<string> {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${this.config.apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${this.modelFor('gemini')}:generateContent?key=${this.config.apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -289,9 +314,14 @@ Return a valid JSON object ONLY with the following schema:
     filePath: string;
     originalContent: string;
     failingLog: string;
+    scenarioId?: string;
   }): LLMPatchResponse {
-    const heuristic = applyScenarioHeuristicPatch(params.filePath, params.originalContent);
-    if (!allowHeuristicPatches()) {
+    const heuristic = applyScenarioHeuristicPatch(
+      params.filePath,
+      params.originalContent,
+      params.scenarioId
+    );
+    if (!allowHeuristicPatches(params.scenarioId)) {
       return {
         analysis: 'No live model response and DEMO_OFFLINE is off, so no pre-baked patch was applied.',
         rootCauseFile: params.filePath,

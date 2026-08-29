@@ -14,6 +14,7 @@ import { eventBus } from './event-bus.ts';
 import { sessionManager } from './session.ts';
 import { createTrueForgeClient } from './sdk-client.ts';
 import { bootstrapTrueForge, registerRemoteMcpServer } from './bootstrap.ts';
+import { traceTurnEvent } from './turn-tracer.ts';
 import {
   OPENHEAL_APPROVAL_TOOLS,
   composioMcpHeaders,
@@ -61,6 +62,29 @@ Work in this order, using your sandbox shell for every step:
 
 The GitHub write tools pause for human approval. That pause is expected: state what you are
 about to do and wait. Keep status updates short and factual.`;
+}
+
+function prReviewInstructions(input: {
+  repoUrl: string;
+  repoFullName: string;
+  prNumber?: number;
+  headBranch?: string;
+  autoFix?: boolean;
+}): string {
+  return `You are OpenHeal, an agent-swarm PR review orchestrator on the TrueForge harness.
+
+Repository: ${input.repoFullName} (${input.repoUrl})
+Pull request: #${input.prNumber ?? '?'}${input.headBranch ? ` · head ${input.headBranch}` : ''}
+
+Delegate to specialized subagents in strict order:
+1. BuildOps — clone the PR head branch, install dependencies, build, start the dev server, report app URL.
+2. Explorer — use browser/shell tools to exercise user flows affected by the PR diff; capture anomalies, HTTP errors, console failures, screenshots.
+3. Diagnostic — for each Explorer finding, read source and pinpoint file + line + root-cause hypothesis.
+4. Reporter — compile structured findings (severity, repro steps, evidence) and post a PR comment via GITHUB_CREATE_AN_ISSUE_COMMENT.
+
+${input.autoFix ? '5. If bugs are confirmed: spawn Patcher then Verifier, then open a fix PR (writes require human approval).' : 'Do not open fix PRs unless explicitly instructed.'}
+
+Spawn dynamic subagents for each phase. Keep status updates short and factual.`;
 }
 
 /** Attach the Composio-hosted GitHub toolkit so the agent calls GitHub itself. */
@@ -163,6 +187,79 @@ export async function runHealOnHarness(input: {
   return { started: true };
 }
 
+export async function runReviewOnHarness(input: {
+  sessionId: string;
+  threadId: string;
+  repoUrl: string;
+  repoFullName: string;
+  prNumber?: number;
+  headBranch?: string;
+  composioUserId?: string;
+  model?: string;
+  daytonaKey?: string;
+  triggerPrompt?: string;
+  autoFix?: boolean;
+}): Promise<{ started: boolean; reason?: string }> {
+  const { sessionId, threadId } = input;
+  const status = (message: string) =>
+    eventBus.emitEvent(sessionId, threadId, 'agent.status', {
+      agent: 'orchestrator',
+      status: 'running',
+      message,
+    });
+
+  const report = await bootstrapTrueForge({
+    requestedModel: input.model,
+    daytonaKey: input.daytonaKey,
+  });
+  for (const warning of report.warnings) status(`TrueForge: ${warning}`);
+  if (!report.reachable || !report.model) {
+    return { started: false, reason: report.warnings[0] || 'TrueForge unreachable' };
+  }
+
+  const githubAttached = input.composioUserId ? await attachGithubMcp(input.composioUserId) : false;
+  status(githubAttached ? 'GitHub MCP attached for PR comment + optional fix PR.' : 'GitHub MCP not attached.');
+
+  const client = createTrueForgeClient();
+  const spec: TrueForgeApi.AgentSpec = {
+    model: { name: report.model },
+    instructions: prReviewInstructions(input),
+    config: {
+      sandbox: { enabled: true },
+      dynamicSubAgents: { enabled: true },
+      iterationLimit: 150,
+    },
+    ...(githubAttached
+      ? {
+          mcpServers: [
+            {
+              name: GITHUB_MCP_NAME,
+              preloadTools: OPENHEAL_APPROVAL_TOOLS,
+              requireApprovalForTools: OPENHEAL_APPROVAL_TOOLS,
+            },
+          ],
+        }
+      : {}),
+  };
+
+  const created = await client.sessions.create({ agent: { spec } });
+  const tfSessionId = (created as { data?: { id?: string }; id?: string }).data?.id
+    ?? (created as { id?: string }).id;
+  if (!tfSessionId) throw new Error('TrueForge sessions.create returned no session id');
+
+  const run: HarnessRun = { client, tfSessionId, pending: [], toolNames: new Map() };
+  runs.set(sessionId, run);
+  status(`TrueForge review swarm session ${tfSessionId} opened.`);
+
+  const opening =
+    input.triggerPrompt ||
+    `Review PR #${input.prNumber ?? '?'} on ${input.repoFullName}. Begin with BuildOps.`;
+  await streamTurn(run, sessionId, threadId, {
+    input: [{ type: 'user.message', content: opening }],
+  });
+  return { started: true };
+}
+
 /**
  * Drive one turn to a terminal event, republishing the harness's own events on
  * the bus the dashboard already listens to.
@@ -175,10 +272,22 @@ async function streamTurn(
 ): Promise<void> {
   const merged = new Map<string, Record<string, unknown>>();
   run.pending = [];
+  let lastSequenceNumber = 0;
+  let activeTurnId: string | undefined;
 
   const stream = await run.client.sessions.createTurnStream(run.tfSessionId, body as never);
+  const iterable =
+    typeof (stream as { withMetadata?: () => AsyncIterable<unknown> }).withMetadata === 'function'
+      ? (stream as { withMetadata: () => AsyncIterable<unknown> }).withMetadata()
+      : stream;
 
-  for await (const raw of stream as AsyncIterable<unknown>) {
+  for await (const raw of iterable as AsyncIterable<unknown>) {
+    const seq =
+      raw && typeof raw === 'object' && 'id' in (raw as object)
+        ? Number((raw as { id?: unknown }).id)
+        : undefined;
+    if (seq != null && !Number.isNaN(seq)) lastSequenceNumber = seq;
+
     const event = unwrapEvent(raw);
     if (!event) continue;
 
@@ -187,8 +296,16 @@ async function streamTurn(
       const base = merged.get(id) || { ...event };
       mergeEventDelta(base as never, event as never);
       merged.set(id, base);
+      traceTurnEvent(sessionId, threadId, event, { seq: lastSequenceNumber, turnId: activeTurnId });
     } else if (id) {
       merged.set(id, event);
+      traceTurnEvent(sessionId, threadId, event, { seq: lastSequenceNumber, turnId: activeTurnId });
+    } else {
+      traceTurnEvent(sessionId, threadId, event, { seq: lastSequenceNumber, turnId: activeTurnId });
+    }
+
+    if (event.type === 'turn.created') {
+      activeTurnId = String(field(event, 'turnId', 'turn_id') ?? '');
     }
 
     routeEvent(event, sessionId, threadId, run, merged);
@@ -220,18 +337,66 @@ function routeEvent(
   harvestToolNames(event, run);
 
   switch (type) {
+    case 'turn.created':
+      eventBus.emitEvent(sessionId, threadId, 'agent.status', {
+        agent: 'orchestrator',
+        status: 'running',
+        message: 'TrueForge turn started.',
+      });
+      break;
+
+    case 'thread.created':
+      eventBus.emitEvent(sessionId, thread, 'agent.status', {
+        agent: subagentFor(String(field(event, 'title', 'title') || thread)),
+        status: 'running',
+        message: `Subagent: ${field(event, 'title', 'title') ?? thread}`,
+      });
+      break;
+
+    case 'thread.done':
+      eventBus.emitEvent(sessionId, thread, 'agent.status', {
+        agent: subagentFor(String(field(event, 'title', 'title') || thread)),
+        status: 'completed',
+        message: `Subagent finished: ${field(event, 'title', 'title') ?? thread}`,
+      });
+      break;
+
     case 'sandbox.created':
       eventBus.emitEvent(sessionId, threadId, 'agent.status', {
         agent: 'orchestrator',
         status: 'running',
         message: 'TrueForge provisioned the agent sandbox.',
       });
-      sessionManager.transitionStatus(sessionId, 'PROVISIONING_SANDBOX');
+      sessionManager.transitionStatus(sessionId, 'CAPTURING_BASELINE');
       break;
 
     case 'model.message.delta': {
       const text = extractText(event);
       if (text) eventBus.emitDelta(sessionId, thread, 'agent.thought.delta', { delta: text });
+      break;
+    }
+
+    case 'model.message': {
+      harvestToolNames(event, run);
+      const text = extractText(event);
+      if (text) {
+        eventBus.emitEvent(sessionId, thread, 'agent.thought', { completeThought: text });
+      }
+      const calls = event.toolCalls ?? event.tool_calls;
+      if (Array.isArray(calls)) {
+        for (const call of calls) {
+          const fn = (call as { function?: { name?: string; arguments?: string } }).function;
+          const name = fn?.name || (call as { name?: string }).name || 'tool';
+          eventBus.emitEvent(sessionId, thread, 'agent.status', {
+            agent: subagentFor(thread),
+            status: 'running',
+            message: `${name}${fn?.arguments ? `(${fn.arguments.slice(0, 120)})` : ''}`,
+          });
+          if (sessionManager.getSession(sessionId)?.status === 'PROVISIONING_SANDBOX') {
+            sessionManager.transitionStatus(sessionId, 'DIAGNOSING');
+          }
+        }
+      }
       break;
     }
 
@@ -242,6 +407,9 @@ function routeEvent(
         status: 'running',
         message: `${name}`,
       });
+      if (sessionManager.getSession(sessionId)?.status === 'PROVISIONING_SANDBOX') {
+        sessionManager.transitionStatus(sessionId, 'DIAGNOSING');
+      }
       break;
     }
 
@@ -282,18 +450,49 @@ function routeEvent(
         status: 'awaiting_approval',
         message: `Human approval required for ${names.length ? names.join(', ') : 'a GitHub write'}.`,
       });
+      eventBus.emitEvent(sessionId, threadId, 'tool.approval_required', {
+        resumeToken: refs[0] && typeof refs[0] === 'object' ? (refs[0] as { id?: string }).id : '',
+        toolCalls: refs,
+        toolNames: names,
+        parameters: { tools: names },
+      });
       break;
     }
 
     case 'turn.done': {
-      const state = event.state as { status?: string; message?: string } | undefined;
+      const state = event.state as {
+        status?: string;
+        message?: string;
+        output?: { content?: string };
+      } | undefined;
       if (state?.status === 'error') {
         eventBus.emitEvent(sessionId, threadId, 'session.error', {
           error: state.message || 'TrueForge turn failed',
         });
+        sessionManager.transitionStatus(sessionId, 'FAILED', state.message);
+      } else if (state?.status === 'done' && state.output?.content) {
+        eventBus.emitEvent(sessionId, threadId, 'agent.thought', {
+          completeThought: state.output.content,
+        });
+      }
+      if (state?.status === 'done' && run.pending.length === 0) {
+        sessionManager.transitionStatus(sessionId, 'COMPLETED');
+        eventBus.emitEvent(sessionId, threadId, 'session.completed', {
+          sessionId,
+          status: 'COMPLETED',
+          durationMs: 0,
+        });
       }
       break;
     }
+
+    case 'mcp.auth_required':
+      eventBus.emitEvent(sessionId, threadId, 'agent.status', {
+        agent: 'orchestrator',
+        status: 'awaiting_approval',
+        message: 'MCP OAuth authorization required — check TrueForge session.',
+      });
+      break;
   }
 }
 
@@ -309,7 +508,14 @@ function harvestToolNames(event: Record<string, unknown>, run: HarnessRun): void
 
 /** Subagent threads carry their own thread_id; `main` is the orchestrator. */
 function subagentFor(threadId: string): string {
-  return !threadId || threadId === 'main' ? 'orchestrator' : threadId;
+  if (!threadId || threadId === 'main') return 'orchestrator';
+  if (threadId.includes('buildops')) return 'buildops';
+  if (threadId.includes('explorer')) return 'explorer';
+  if (threadId.includes('diagnostic')) return 'diagnostic';
+  if (threadId.includes('reporter')) return 'reporter';
+  if (threadId.includes('patcher')) return 'patcher';
+  if (threadId.includes('verifier')) return 'verifier';
+  return threadId;
 }
 
 function extractText(event: Record<string, unknown>): string {

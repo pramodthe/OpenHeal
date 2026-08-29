@@ -29,14 +29,20 @@ export function resolveCredentials(input: HealLaunchCredentials = {}): ResolvedH
     trimKey(process.env.GITHUB_PERSONAL_ACCESS_TOKEN);
 
   const daytonaKey = trimKey(input.daytonaKey) || trimKey(process.env.DAYTONA_API_KEY);
-  const model = trimKey(input.model) || process.env.OPENHEAL_LLM_MODEL || 'gpt-5.6-luna';
+  const rawModel =
+    trimKey(input.model) ||
+    process.env.TRUEFORGE_MODEL?.trim() ||
+    process.env.OPENHEAL_LLM_MODEL?.trim() ||
+    'openai/gpt-5.6-luna';
+  const llmProvider = inferProvider(rawModel, openaiKey);
+  const model = resolveModelForProvider(rawModel, llmProvider);
 
   return {
     openaiKey,
     githubToken,
     daytonaKey,
     model,
-    llmProvider: inferProvider(model, openaiKey),
+    llmProvider,
     composioUserId: trimKey(input.composioUserId),
   };
 }
@@ -44,6 +50,45 @@ export function resolveCredentials(input: HealLaunchCredentials = {}): ResolvedH
 function trimKey(value?: string): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+export function defaultModelForProvider(
+  provider: ResolvedHealCredentials['llmProvider']
+): string {
+  switch (provider) {
+    case 'anthropic':
+      return 'claude-sonnet-5';
+    case 'gemini':
+      return 'gemini-1.5-pro';
+    case 'openrouter':
+      return 'gpt-4o';
+    default:
+      return 'openai/gpt-5.6-luna';
+  }
+}
+
+export function modelBelongsToProvider(
+  model: string,
+  provider: ResolvedHealCredentials['llmProvider']
+): boolean {
+  const lower = model.toLowerCase();
+  if (provider === 'anthropic') return lower.includes('claude');
+  if (provider === 'gemini') return lower.includes('gemini');
+  if (provider === 'openrouter') return true;
+  return (
+    lower.includes('gpt') ||
+    lower.includes('o1') ||
+    lower.includes('luna') ||
+    lower.includes('terra') ||
+    lower.includes('sol')
+  );
+}
+
+export function resolveModelForProvider(
+  model: string,
+  provider: ResolvedHealCredentials['llmProvider']
+): string {
+  return modelBelongsToProvider(model, provider) ? model : defaultModelForProvider(provider);
 }
 
 function inferProvider(

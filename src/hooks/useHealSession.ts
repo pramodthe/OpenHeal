@@ -1,10 +1,26 @@
 'use client';
 
-import { useRef, useState } from 'react';
-import type { DiffFileEntry } from '@/components/MonacoDiffViewer';
-import type { TerminalLogEntry } from '@/components/TerminalLogs';
+import { useCallback, useRef, useState } from 'react';
+import type { DiffFileEntry } from '@/components/PatchView';
+import type { TerminalLogEntry } from '@/components/LogStream';
 import type { ScenarioItem } from '@/lib/scenarios-catalog';
 import type { HealLaunchCredentials } from '@/lib/heal/credentials';
+import type { FindingItem } from '@/components/FindingsPanel';
+import { phaseForStatus, type PhaseId } from '@/lib/run-phases';
+
+/**
+ * One occurrence of a phase. Phases can repeat — the verifier can send a patch
+ * back for another attempt — so records are append-only and carry an attempt
+ * number rather than being keyed by phase id.
+ */
+export interface PhaseRecord {
+  key: string;
+  id: PhaseId;
+  attempt: number;
+  startedAt: number;
+  endedAt?: number;
+  outcome?: 'ok' | 'bad';
+}
 
 export function useHealSession() {
   const [sessionId, setSessionId] = useState('');
@@ -20,7 +36,76 @@ export function useHealSession() {
   const [approvalPayload, setApprovalPayload] = useState<any>(null);
   const [pullRequest, setPullRequest] = useState<any>(null);
   const [errorMessage, setErrorMessage] = useState('');
+  const [findings, setFindings] = useState<FindingItem[]>([]);
+
+  // Timing, so the console can draw the run to scale rather than as a checklist.
+  const [phases, setPhases] = useState<PhaseRecord[]>([]);
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [runEndedAt, setRunEndedAt] = useState<number | null>(null);
+
   const eventSourceRef = useRef<EventSource | null>(null);
+  const terminalStatusRef = useRef<string | null>(null);
+
+  const mapPatchEntries = (patches: any[], fallbackDiff?: string): DiffFileEntry[] =>
+    patches.map((p: any) => ({
+      filePath: p.filePath,
+      originalContent: p.originalContent || '',
+      patchedContent: p.patchedContent || '',
+      diff: p.diff || fallbackDiff,
+      linesAdded: p.linesAdded,
+      linesRemoved: p.linesRemoved,
+    }));
+
+  const beginPhase = useCallback((id: PhaseId, at: number = Date.now()) => {
+    setPhases((prev) => {
+      const open = prev.find((p) => p.endedAt === undefined);
+      if (open?.id === id) return prev;
+      const closed = prev.map((p) =>
+        p.endedAt === undefined ? { ...p, endedAt: at, outcome: p.outcome ?? ('ok' as const) } : p
+      );
+      const attempt = closed.filter((p) => p.id === id).length + 1;
+      return [...closed, { key: `${id}-${attempt}-${at}`, id, attempt, startedAt: at }];
+    });
+  }, []);
+
+  const closeOpenPhase = useCallback((outcome: 'ok' | 'bad', at: number = Date.now()) => {
+    setPhases((prev) =>
+      prev.map((p) => (p.endedAt === undefined ? { ...p, endedAt: at, outcome } : p))
+    );
+  }, []);
+
+  /** Sync status from server polling without resetting the phase tape. */
+  const applyStatusFromServer = useCallback(
+    (next: string) => {
+      if (!next || terminalStatusRef.current === 'REJECTED') return;
+      setSessionStatus(next);
+      const phase = phaseForStatus(next);
+      if (phase) beginPhase(phase);
+    },
+    [beginPhase]
+  );
+
+  /** Single place where status and the tape stay in step. */
+  const applyStatus = useCallback(
+    (next: string) => {
+      if (terminalStatusRef.current === 'REJECTED' && next !== 'REJECTED') return;
+
+      setSessionStatus(next);
+      const phase = phaseForStatus(next);
+      if (phase) {
+        beginPhase(phase);
+        return;
+      }
+      if (next === 'COMPLETED') {
+        closeOpenPhase('ok');
+        setRunEndedAt(Date.now());
+      } else if (next === 'FAILED' || next === 'REJECTED') {
+        closeOpenPhase('bad');
+        setRunEndedAt(Date.now());
+      }
+    },
+    [beginPhase, closeOpenPhase]
+  );
 
   const addLog = (
     text: string,
@@ -43,6 +128,7 @@ export function useHealSession() {
     if (typeof payload === 'string') return payload;
     if (typeof payload.delta === 'string') return payload.delta;
     if (typeof payload.delta?.text === 'string') return payload.delta.text;
+    if (typeof payload.delta?.delta === 'string') return payload.delta.delta;
     if (typeof payload.text === 'string') return payload.text;
     if (typeof payload.chunk === 'string') return payload.chunk;
     if (typeof payload.message === 'string') return payload.message;
@@ -52,21 +138,52 @@ export function useHealSession() {
   const processIncomingEvent = (eventType: string, payload: any) => {
     switch (eventType) {
       case 'session.started':
-        setSessionStatus('CAPTURING_BASELINE');
+        applyStatus('CAPTURING_BASELINE');
         break;
       case 'agent.status':
         if (payload?.message) addLog(payload.message, 'agent');
+        if (payload.status === 'failed') {
+          closeOpenPhase('bad');
+          break;
+        }
         if (payload.status === 'running') {
-          if (payload.agent === 'diagnostic') setSessionStatus('DIAGNOSING');
-          if (payload.agent === 'patcher') setSessionStatus('SYNTHESIZING');
-          if (payload.agent === 'verifier') setSessionStatus('VERIFYING');
+          if (payload.agent === 'buildops') {
+            beginPhase('buildops');
+            applyStatus('BUILDING');
+          }
+          if (payload.agent === 'explorer') {
+            beginPhase('explorer');
+            applyStatus('EXPLORING');
+          }
+          if (payload.agent === 'reporter') beginPhase('review');
+          if (payload.agent === 'diagnostic') applyStatus('DIAGNOSING');
+          if (payload.agent === 'patcher') applyStatus('SYNTHESIZING');
+          if (payload.agent === 'verifier') applyStatus('VERIFYING');
           if (payload.agent === 'orchestrator' && payload.message?.includes('Pull Request')) {
-            setSessionStatus('EXECUTING_PR');
+            applyStatus('EXECUTING_PR');
           }
         }
         break;
+      case 'buildops.completed':
+        beginPhase('explorer');
+        break;
+      case 'explorer.finding':
+        setFindings((prev) => [...prev, payload as FindingItem]);
+        break;
+      case 'review.completed':
+        beginPhase('review');
+        break;
       case 'agent.thought.delta':
         addLog(extractLogText(payload), 'agent');
+        break;
+      case 'turn.trace': {
+        const thread = payload?.threadId ? `[${payload.threadId}] ` : '';
+        const line = `${thread}${payload?.summary ?? payload?.type ?? 'turn event'}`;
+        addLog(line, 'trace', payload?.type === 'turn.done' && payload?.event?.state?.status === 'error' ? 'error' : 'info');
+        break;
+      }
+      case 'agent.thought':
+        if (payload?.completeThought) addLog(payload.completeThought, 'agent');
         break;
       case 'sandbox.log.delta':
         addLog(extractLogText(payload), 'sandbox');
@@ -76,66 +193,62 @@ export function useHealSession() {
         break;
       case 'patch.generated':
       case 'patch.synthesized':
+      case 'diff.generated': {
         setPatchResult(payload.result || payload);
-        if (payload.result?.patches?.length > 0) {
-          setDiffFiles(
-            payload.result.patches.map((p: any) => ({
-              filePath: p.filePath,
-              originalContent: p.originalContent || '',
-              patchedContent: p.patchedContent || '',
-              diff: p.diff || payload.diff,
-              linesAdded: p.linesAdded,
-              linesRemoved: p.linesRemoved,
-            }))
-          );
-        } else if (payload.filePatches?.length > 0) {
-          setDiffFiles(
-            payload.filePatches.map((p: any) => ({
-              filePath: p.filePath,
-              originalContent: p.originalContent || '',
-              patchedContent: p.patchedContent || '',
-              diff: p.diff,
-              linesAdded: p.linesAdded,
-              linesRemoved: p.linesRemoved,
-            }))
-          );
+        const patches =
+          payload.patches ??
+          payload.result?.patches ??
+          payload.filePatches;
+        if (patches?.length > 0) {
+          setDiffFiles(mapPatchEntries(patches, payload.diff ?? payload.unifiedDiff));
         }
         break;
+      }
       case 'qodo.scorecard':
         setQodoScorecard(payload);
+        // Scoring runs after verification and before the gate; it earns its own
+        // block on the tape so the operator can see how little time it takes.
+        beginPhase('review');
         break;
       case 'verification.completed':
         setVerificationReport(payload);
         break;
       case 'tool.approval_required':
-        setSessionStatus('AWAITING_HUMAN_APPROVAL');
+        applyStatus('AWAITING_HUMAN_APPROVAL');
         setApprovalPayload(payload);
         break;
       case 'github.pr_created':
         setPullRequest(payload);
-        setSessionStatus('COMPLETED');
+        applyStatus('COMPLETED');
         break;
       case 'session.completed':
-        if (payload.status === 'healed') setSessionStatus('COMPLETED');
-        else if (payload.status === 'rejected') setSessionStatus('REJECTED');
-        else setSessionStatus('FAILED');
+        if (payload.status === 'healed' || payload.status === 'COMPLETED') applyStatus('COMPLETED');
+        else if (payload.status === 'rejected') applyStatus('REJECTED');
+        else applyStatus('FAILED');
         setIsLoading(false);
+        setIsStreaming(false);
         break;
       case 'session.error':
-        setSessionStatus('FAILED');
-        setErrorMessage(payload.error || 'Unknown swarm error');
+        applyStatus('FAILED');
+        setErrorMessage(payload.error || 'The run stopped before it could finish.');
         setIsLoading(false);
+        setIsStreaming(false);
         break;
       default:
         break;
     }
   };
 
-  const connectSSE = (id: string) => {
+  const connectSSE = useCallback((id: string) => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
+    setSessionId(id);
     setIsStreaming(true);
+    if (!runStartedAt) {
+      setRunStartedAt(Date.now());
+      beginPhase('sandbox', Date.now());
+    }
     const eventSource = new EventSource(`/api/stream?sessionId=${encodeURIComponent(id)}`);
     eventSourceRef.current = eventSource;
 
@@ -154,11 +267,17 @@ export function useHealSession() {
       'session.started',
       'agent.status',
       'agent.thought.delta',
+      'agent.thought',
+      'turn.trace',
       'sandbox.log.delta',
       'test.result',
+      'buildops.completed',
+      'explorer.finding',
+      'review.completed',
       'diagnostic.completed',
       'patch.generated',
       'patch.synthesized',
+      'diff.generated',
       'qodo.scorecard',
       'verification.completed',
       'tool.approval_required',
@@ -170,7 +289,7 @@ export function useHealSession() {
     for (const evt of eventTypes) {
       eventSource.addEventListener(evt, (e: MessageEvent) => handleAnyMessage(e, evt));
     }
-  };
+  }, [beginPhase, runStartedAt]);
 
   const handleStartHeal = async (
     scenario: ScenarioItem,
@@ -179,6 +298,8 @@ export function useHealSession() {
     _customLog?: string,
     credentials?: HealLaunchCredentials
   ) => {
+    const startedAt = Date.now();
+    terminalStatusRef.current = null;
     setIsLoading(true);
     setErrorMessage('');
     setApprovalPayload(null);
@@ -189,7 +310,12 @@ export function useHealSession() {
     setPatchResult(null);
     setQodoScorecard(null);
     setVerificationReport(null);
+    setFindings([]);
+    setPhases([]);
+    setRunStartedAt(startedAt);
+    setRunEndedAt(null);
     setSessionStatus('PROVISIONING_SANDBOX');
+    beginPhase('sandbox', startedAt);
 
     try {
       const res = await fetch('/api/heal', {
@@ -208,44 +334,47 @@ export function useHealSession() {
         }),
       });
       const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to start healing session');
+      if (!res.ok || !data.success) throw new Error(data.error || 'The run could not be started.');
       setSessionId(data.sessionId);
       connectSSE(data.sessionId);
     } catch (err: any) {
-      setSessionStatus('FAILED');
-      setErrorMessage(err.message || 'Network error');
+      applyStatus('FAILED');
+      setErrorMessage(err.message || 'Could not reach the OpenHeal server.');
       setIsLoading(false);
     }
   };
 
-  const handleApprove = async (resumeToken: string) => {
+  const handleApprove = async (resumeToken: string, overrideSessionId?: string) => {
+    const sid = overrideSessionId || sessionId;
     try {
       const res = await fetch('/api/heal/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, resumeToken, status: 'allow' }),
+        body: JSON.stringify({ sessionId: sid, resumeToken, status: 'allow' }),
       });
       const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || 'Approval failed');
+      if (!res.ok || !data.success) throw new Error(data.error || 'The approval did not go through.');
       setApprovalPayload(null);
-      setSessionStatus('EXECUTING_PR');
+      applyStatus('EXECUTING_PR');
       if (data.pullRequest) setPullRequest(data.pullRequest);
     } catch (err: any) {
       setErrorMessage(err.message);
     }
   };
 
-  const handleReject = async (resumeToken: string, feedback?: string) => {
+  const handleReject = async (resumeToken: string, feedback?: string, overrideSessionId?: string) => {
+    const sid = overrideSessionId || sessionId;
     try {
       const res = await fetch('/api/heal/reject', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, resumeToken, status: 'deny', feedback }),
+        body: JSON.stringify({ sessionId: sid, resumeToken, status: 'deny', feedback }),
       });
       const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || 'Rejection failed');
+      if (!res.ok || !data.success) throw new Error(data.error || 'The patch could not be sent back.');
       setApprovalPayload(null);
-      setSessionStatus('REJECTED');
+      terminalStatusRef.current = 'REJECTED';
+      applyStatus('REJECTED');
     } catch (err: any) {
       setErrorMessage(err.message);
     }
@@ -253,6 +382,8 @@ export function useHealSession() {
 
   const resetSession = () => {
     eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    terminalStatusRef.current = null;
     setSessionId('');
     setSessionStatus('IDLE');
     setIsLoading(false);
@@ -265,7 +396,11 @@ export function useHealSession() {
     setVerificationReport(null);
     setApprovalPayload(null);
     setPullRequest(null);
+    setFindings([]);
     setErrorMessage('');
+    setPhases([]);
+    setRunStartedAt(null);
+    setRunEndedAt(null);
   };
 
   return {
@@ -282,10 +417,16 @@ export function useHealSession() {
     approvalPayload,
     pullRequest,
     errorMessage,
+    findings,
+    phases,
+    runStartedAt,
+    runEndedAt,
     setLogs,
+    connectSSE,
     handleStartHeal,
     handleApprove,
     handleReject,
     resetSession,
+    applyStatusFromServer,
   };
 }

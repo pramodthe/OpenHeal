@@ -203,7 +203,13 @@ export class RegressionVerifierSubagent {
     let failedCount = 0;
     let skippedCount = 0;
 
-    if (pytestPassedMatch || pytestFailedMatch) {
+    // Node.js test runner summary: "# pass 2" / "# fail 1"
+    const nodePassMatch = /#\s*pass\s+(\d+)/i.exec(output);
+    const nodeFailMatch = /#\s*fail\s+(\d+)/i.exec(output);
+    if (nodePassMatch || nodeFailMatch) {
+      if (nodePassMatch) passedCount = parseInt(nodePassMatch[1], 10);
+      if (nodeFailMatch) failedCount = parseInt(nodeFailMatch[1], 10);
+    } else if (pytestPassedMatch || pytestFailedMatch) {
       if (pytestPassedMatch) passedCount = parseInt(pytestPassedMatch[1], 10);
       if (pytestFailedMatch) failedCount = parseInt(pytestFailedMatch[1], 10);
       if (pytestSkippedMatch) skippedCount = parseInt(pytestSkippedMatch[1], 10);

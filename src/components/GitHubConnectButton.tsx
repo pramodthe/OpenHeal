@@ -1,16 +1,17 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { CheckCircle2, GitBranch, Loader2 } from 'lucide-react';
+import { Check, Loader2 } from 'lucide-react';
 
 interface GithubStatus {
   configured: boolean;
   connected: boolean;
+  webhookScopeOk?: boolean;
   message?: string;
   error?: string;
 }
 
-export function GitHubConnectButton() {
+export function GitHubConnectButton({ onConnected }: { onConnected?: () => void }) {
   const [status, setStatus] = useState<GithubStatus>({ configured: false, connected: false });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -22,11 +23,16 @@ export function GitHubConnectButton() {
       setStatus({
         configured: Boolean(data.configured),
         connected: Boolean(data.connected),
+        webhookScopeOk: data.webhookScopeOk !== false,
         message: data.message,
         error: data.error,
       });
     } catch (err) {
-      setStatus({ configured: false, connected: false, error: err instanceof Error ? err.message : 'Status check failed' });
+      setStatus({
+        configured: false,
+        connected: false,
+        error: err instanceof Error ? err.message : 'Could not check the GitHub connection.',
+      });
     }
   }, []);
 
@@ -50,53 +56,85 @@ export function GitHubConnectButton() {
     try {
       const res = await fetch('/api/github/connect', { method: 'POST' });
       const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || 'Could not start GitHub OAuth');
+      if (!res.ok || !data.success) throw new Error(data.error || 'Could not start GitHub sign-in.');
       if (data.alreadyConnected) {
         setStatus((prev) => ({ ...prev, connected: true, configured: true }));
+        onConnected?.();
         return;
       }
       if (data.redirectUrl) {
         window.location.href = data.redirectUrl;
         return;
       }
-      throw new Error('Composio did not return a redirect URL');
+      throw new Error('GitHub sign-in did not return a redirect address.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Connect failed');
+      setError(err instanceof Error ? err.message : 'Could not connect to GitHub.');
     } finally {
+      setBusy(false);
+    }
+  };
+
+  const reconnect = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await fetch('/api/github/disconnect', { method: 'POST' });
+      await connect();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not reconnect GitHub.');
       setBusy(false);
     }
   };
 
   if (status.connected) {
     return (
-      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
-        <div className="flex items-center gap-2 font-mono text-[11px] font-semibold text-emerald-300">
-          <CheckCircle2 className="h-3.5 w-3.5" />
-          GitHub connected
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2 rounded border border-pass/40 bg-pass-wash px-2.5 py-2">
+          <Check className="h-3.5 w-3.5 shrink-0 text-pass" strokeWidth={2.5} />
+          <div>
+            <p className="text-[12px] font-medium text-ink">GitHub connected</p>
+            <p className="text-[11px] leading-snug text-ink-2">
+              {status.webhookScopeOk
+                ? 'PR webhooks can be armed on enrolled repos.'
+                : 'Missing webhook permission — reconnect to auto-run on PRs.'}
+            </p>
+          </div>
         </div>
-        <p className="mt-1 font-mono text-[10px] text-emerald-400/70">PRs open with this account after you approve.</p>
+        {!status.webhookScopeOk ? (
+          <button
+            type="button"
+            onClick={reconnect}
+            disabled={busy}
+            className="rounded border border-amber-500/50 bg-amber-500/10 px-2.5 py-1.5 text-[11px] font-medium text-ink hover:bg-amber-500/20 disabled:opacity-60"
+          >
+            {busy ? 'Reconnecting…' : 'Reconnect GitHub (webhook scopes)'}
+          </button>
+        ) : null}
       </div>
     );
   }
 
+  const note = error || status.error || status.message;
+
   return (
-    <div className="space-y-2 rounded-lg border border-slate-800 bg-black/30 px-3 py-2">
+    <div>
       <button
         type="button"
         onClick={connect}
         disabled={busy}
-        className="inline-flex items-center gap-2 rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 font-mono text-[11px] text-white hover:border-emerald-500/50 disabled:opacity-60"
+        className="flex w-full items-center justify-center gap-2 rounded border border-rule-strong bg-card px-3 py-2 text-[12px] font-medium text-ink transition-colors hover:bg-paper-2 disabled:opacity-60"
       >
-        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitBranch className="h-3.5 w-3.5" />}
+        {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />}
         Connect GitHub
       </button>
-      <p className="font-mono text-[10px] leading-relaxed text-slate-500">
-        Browser OAuth via Composio — no PAT.
-        {status.configured ? '' : ' Needs COMPOSIO_API_KEY in .env.'}
+      <p className="mt-1.5 text-[11px] leading-snug text-ink-3">
+        {status.configured
+          ? 'Signs in through your browser — no token to paste.'
+          : 'Add COMPOSIO_API_KEY to your .env to enable browser sign-in.'}
       </p>
-      {(error || status.error || status.message) && (
-        <p className="font-mono text-[10px] text-rose-400">{error || status.error || status.message}</p>
-      )}
+      {note && <p className="mt-1 text-[11px] leading-snug text-fail">{note}</p>}
     </div>
   );
 }
+
+export default GitHubConnectButton;

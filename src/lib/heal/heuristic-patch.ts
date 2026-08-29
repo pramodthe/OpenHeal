@@ -1,12 +1,21 @@
+import { resolveBundledScenarioDir } from './scenarios.ts';
+
 /**
- * Pre-baked scenario patches are demo-only. Production heals must come from the model.
+ * Pre-baked scenario patches are demo-only. Production heals must come from the model,
+ * except bundled lab fixtures where GitHub repos are placeholders.
  */
-export function allowHeuristicPatches(): boolean {
-  return process.env.DEMO_OFFLINE === 'true' || process.env.NODE_ENV === 'test';
+export function allowHeuristicPatches(scenarioId?: string): boolean {
+  if (process.env.DEMO_OFFLINE === 'true' || process.env.NODE_ENV === 'test') return true;
+  if (scenarioId && resolveBundledScenarioDir(scenarioId)) return true;
+  return false;
 }
 
-export function applyScenarioHeuristicPatch(filePath: string, original: string): string {
-  if (!allowHeuristicPatches()) return original;
+export function applyScenarioHeuristicPatch(
+  filePath: string,
+  original: string,
+  scenarioId?: string
+): string {
+  if (!allowHeuristicPatches(scenarioId)) return original;
 
   if (filePath.endsWith('.py') || original.includes('return a // b')) {
     const pythonPatched = patchPythonCalculator(original);
