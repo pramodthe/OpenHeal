@@ -1,7 +1,6 @@
 import type { Config } from 'tailwindcss';
 
 const config: Config = {
-  darkMode: 'class',
   content: [
     './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',
@@ -10,50 +9,64 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        background: '#090d16',
-        foreground: '#f1f5f9',
-        surface: {
-          DEFAULT: '#0f172a',
-          50: '#1e293b',
-          100: '#0f172a',
-          200: '#0b1120',
-          border: '#1e293b',
+        paper: {
+          DEFAULT: 'rgb(var(--paper) / <alpha-value>)',
+          2: 'rgb(var(--paper-2) / <alpha-value>)',
         },
-        cyber: {
-          cyan: '#06b6d4',
-          emerald: '#10b981',
-          purple: '#8b5cf6',
-          indigo: '#6366f1',
-          rose: '#f43f5e',
-          amber: '#f59e0b',
+        card: 'rgb(var(--card) / <alpha-value>)',
+        ink: {
+          DEFAULT: 'rgb(var(--ink) / <alpha-value>)',
+          2: 'rgb(var(--ink-2) / <alpha-value>)',
+          3: 'rgb(var(--ink-3) / <alpha-value>)',
+        },
+        rule: {
+          DEFAULT: 'rgb(var(--rule) / <alpha-value>)',
+          strong: 'rgb(var(--rule-strong) / <alpha-value>)',
+        },
+        signal: {
+          DEFAULT: 'rgb(var(--signal) / <alpha-value>)',
+          ink: 'rgb(var(--signal-ink) / <alpha-value>)',
+          wash: 'rgb(var(--signal-wash) / <alpha-value>)',
+        },
+        fail: {
+          DEFAULT: 'rgb(var(--fail) / <alpha-value>)',
+          wash: 'rgb(var(--fail-wash) / <alpha-value>)',
+        },
+        pass: {
+          DEFAULT: 'rgb(var(--pass) / <alpha-value>)',
+          wash: 'rgb(var(--pass-wash) / <alpha-value>)',
+        },
+        hold: {
+          DEFAULT: 'rgb(var(--hold) / <alpha-value>)',
+          wash: 'rgb(var(--hold-wash) / <alpha-value>)',
+        },
+        well: {
+          DEFAULT: 'rgb(var(--well) / <alpha-value>)',
+          2: 'rgb(var(--well-2) / <alpha-value>)',
+          3: 'rgb(var(--well-3) / <alpha-value>)',
+          rule: 'rgb(var(--well-rule) / <alpha-value>)',
+          ink: 'rgb(var(--well-ink) / <alpha-value>)',
+          'ink-2': 'rgb(var(--well-ink-2) / <alpha-value>)',
+          fail: 'rgb(var(--well-fail) / <alpha-value>)',
+          pass: 'rgb(var(--well-pass) / <alpha-value>)',
+          signal: 'rgb(var(--well-signal) / <alpha-value>)',
+          hold: 'rgb(var(--well-hold) / <alpha-value>)',
         },
       },
       fontFamily: {
-        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
-        sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        sans: ['Archivo', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
+        mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
       },
-      keyframes: {
-        pulseSlow: {
-          '0%, 100%': { opacity: '1', transform: 'scale(1)' },
-          '50%': { opacity: '0.85', transform: 'scale(1.01)' },
-        },
-        glowPulse: {
-          '0%, 100%': {
-            boxShadow: '0 0 15px rgba(6, 182, 212, 0.4), 0 0 30px rgba(16, 185, 129, 0.2)',
-          },
-          '50%': {
-            boxShadow: '0 0 25px rgba(6, 182, 212, 0.7), 0 0 45px rgba(16, 185, 129, 0.4)',
-          },
-        },
-        scanline: {
-          '0%': { transform: 'translateY(-100%)' },
-          '100%': { transform: 'translateY(1000%)' },
-        },
+      fontSize: {
+        '2xs': ['10px', { lineHeight: '14px' }],
       },
-      animation: {
-        'pulse-slow': 'pulseSlow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-        'glow-pulse': 'glowPulse 2s ease-in-out infinite',
-        'scanline': 'scanline 8s linear infinite',
+      borderRadius: {
+        DEFAULT: '3px',
+        md: '4px',
+        lg: '6px',
+      },
+      maxWidth: {
+        prose: '62ch',
       },
     },
   },

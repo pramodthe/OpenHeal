@@ -211,7 +211,7 @@ Return a valid JSON object ONLY with the following schema:
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
+        model: this.config.model || 'claude-sonnet-5',
         max_tokens: 4000,
         messages: [{ role: 'user', content: prompt }],
         stream: true,
@@ -251,7 +251,7 @@ Return a valid JSON object ONLY with the following schema:
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
+        model: this.config.model || 'claude-sonnet-5',
         max_tokens: 4000,
         messages: [{ role: 'user', content: prompt }],
       }),
@@ -270,7 +270,7 @@ Return a valid JSON object ONLY with the following schema:
 
   private async callGemini(prompt: string): Promise<string> {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${this.config.apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${this.config.model || 'gemini-1.5-pro'}:generateContent?key=${this.config.apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

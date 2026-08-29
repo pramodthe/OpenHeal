@@ -33,6 +33,97 @@ import {
   GitCloneError,
 } from './types.ts';
 import { MockLocalSandbox } from './mock-sandbox.ts';
+import nodeFs from 'node:fs';
+import nodePath from 'node:path';
+
+/** Directories that never belong in a sandbox workspace. */
+const SEED_SKIP_DIRS = new Set([
+  '.git',
+  'node_modules',
+  '__pycache__',
+  '.pytest_cache',
+  'target',
+  'venv',
+  '.venv',
+  'dist',
+  'build',
+  '.next',
+]);
+
+const SEED_SKIP_EXTENSIONS = new Set([
+  '.pyc',
+  '.pyo',
+  '.so',
+  '.dylib',
+  '.dll',
+  '.class',
+  '.o',
+  '.a',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.ico',
+  '.pdf',
+  '.zip',
+  '.tar',
+  '.gz',
+]);
+
+/** Single files above this are fixtures we do not want to push over the wire. */
+const SEED_MAX_FILE_BYTES = 512 * 1024;
+
+export function isLocalDirectory(target: string): boolean {
+  if (!target || /^[a-z][a-z0-9+.-]*:\/\//i.test(target) || target.startsWith('git@')) {
+    return false;
+  }
+  try {
+    return nodeFs.existsSync(target) && nodeFs.statSync(target).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** Walks a local directory into POSIX-relative paths plus their contents. */
+export function collectLocalFiles(
+  root: string
+): Array<{ relativePath: string; content: string }> {
+  const out: Array<{ relativePath: string; content: string }> = [];
+
+  const walk = (dir: string, prefix: string): void => {
+    let entries: nodeFs.Dirent[];
+    try {
+      entries = nodeFs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (SEED_SKIP_DIRS.has(entry.name)) continue;
+        walk(nodePath.join(dir, entry.name), prefix ? `${prefix}/${entry.name}` : entry.name);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (SEED_SKIP_EXTENSIONS.has(nodePath.extname(entry.name).toLowerCase())) continue;
+
+      const full = nodePath.join(dir, entry.name);
+      try {
+        if (nodeFs.statSync(full).size > SEED_MAX_FILE_BYTES) continue;
+        out.push({
+          relativePath: prefix ? `${prefix}/${entry.name}` : entry.name,
+          content: nodeFs.readFileSync(full, 'utf-8'),
+        });
+      } catch {
+        // Unreadable or non-UTF8 file — skip rather than fail the whole seed.
+      }
+    }
+  };
+
+  walk(root, '');
+  return out;
+}
 
 export class DaytonaRemoteSandbox implements ISandboxInstance {
   public readonly id: string;
@@ -221,6 +312,15 @@ export class DaytonaRemoteSandbox implements ISandboxInstance {
 
   public async cloneRepository(repoUrl: string, branch?: string): Promise<{ repoPath: string; headCommit: string }> {
     this.assertRunning();
+
+    // Bundled scenarios are directories on the OpenHeal host. The sandbox runs
+    // somewhere else entirely, so `git clone <local path>` can never resolve —
+    // the files have to be uploaded into the workspace instead. MockLocalSandbox
+    // accepts a local directory here too, so both honour the same contract.
+    if (isLocalDirectory(repoUrl)) {
+      return this.seedFromLocalDirectory(repoUrl);
+    }
+
     try {
       await this.executeCommand(`mkdir -p "${this.workspaceDir}"`);
       const branchFlag = branch ? `-b ${branch}` : '';
@@ -243,6 +343,55 @@ export class DaytonaRemoteSandbox implements ISandboxInstance {
     } catch (err: any) {
       if (err instanceof GitCloneError) throw err;
       throw new GitCloneError(`Failed to clone repository: ${err.message}`);
+    }
+  }
+
+  /**
+   * Uploads a local directory into the sandbox workspace and makes it a git
+   * repository, so the rest of the pipeline (patch application, `git diff HEAD`,
+   * branch creation) behaves exactly as it does after a real clone.
+   */
+  private async seedFromLocalDirectory(
+    localDir: string
+  ): Promise<{ repoPath: string; headCommit: string }> {
+    try {
+      const files = collectLocalFiles(localDir);
+      if (files.length === 0) {
+        throw new GitCloneError(`No uploadable files found in ${localDir}`);
+      }
+
+      await this.executeCommand(`mkdir -p "${this.repoDir}"`);
+
+      // One mkdir for every directory we are about to write into, so uploads
+      // never race against a missing parent.
+      const dirs = [...new Set(files.map((f) => nodePath.posix.dirname(f.relativePath)))]
+        .filter((d) => d && d !== '.')
+        .sort();
+      if (dirs.length > 0) {
+        const quoted = dirs.map((d) => `"${this.repoDir}/${d}"`).join(' ');
+        await this.executeCommand(`mkdir -p ${quoted}`);
+      }
+
+      for (const file of files) {
+        await this.uploadFile(`${this.repoDir}/${file.relativePath}`, file.content);
+      }
+
+      await this.executeCommand('git init', { cwd: this.repoDir });
+      await this.executeCommand('git config user.name "OpenHeal Swarm"', { cwd: this.repoDir });
+      await this.executeCommand('git config user.email "swarm@openheal.ai"', { cwd: this.repoDir });
+      await this.executeCommand('git add -A', { cwd: this.repoDir });
+      await this.executeCommand('git commit -m "Baseline before OpenHeal" --allow-empty', {
+        cwd: this.repoDir,
+      });
+
+      const headRes = await this.executeCommand('git rev-parse HEAD', { cwd: this.repoDir });
+      return {
+        repoPath: this.repoDir,
+        headCommit: headRes.stdout.trim(),
+      };
+    } catch (err: any) {
+      if (err instanceof GitCloneError) throw err;
+      throw new GitCloneError(`Failed to seed workspace from ${localDir}: ${err.message}`);
     }
   }
 
