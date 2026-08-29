@@ -29,16 +29,28 @@ export function resolveCredentials(input: HealLaunchCredentials = {}): ResolvedH
     trimKey(process.env.GITHUB_PERSONAL_ACCESS_TOKEN);
 
   const daytonaKey = trimKey(input.daytonaKey) || trimKey(process.env.DAYTONA_API_KEY);
-  const model = trimKey(input.model) || process.env.OPENHEAL_LLM_MODEL || 'gpt-5.6-luna';
+  const requestedModel = trimKey(input.model) || process.env.OPENHEAL_LLM_MODEL || 'gpt-5.6-luna';
+  const llmProvider = inferProvider(requestedModel, openaiKey);
+  const model = normalizeModel(requestedModel, llmProvider);
 
   return {
     openaiKey,
     githubToken,
     daytonaKey,
     model,
-    llmProvider: inferProvider(model, openaiKey),
+    llmProvider,
     composioUserId: trimKey(input.composioUserId),
   };
+}
+
+function normalizeModel(
+  model: string,
+  provider: ResolvedHealCredentials['llmProvider']
+): string {
+  const lower = model.toLowerCase();
+  if (provider === 'anthropic' && !lower.includes('claude')) return 'claude-sonnet-5';
+  if (provider === 'gemini' && !lower.includes('gemini')) return 'gemini-1.5-pro';
+  return model;
 }
 
 function trimKey(value?: string): string | undefined {

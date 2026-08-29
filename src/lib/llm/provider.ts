@@ -32,10 +32,16 @@ export class LiveLLMProvider {
   private config: LLMConfig;
 
   constructor(config: LLMConfig = {}) {
+    const provider = config.provider || (process.env.ANTHROPIC_API_KEY ? 'anthropic' : process.env.GEMINI_API_KEY ? 'gemini' : 'openai');
+    const requestedModel = config.model || 'gpt-5.6-luna';
     this.config = {
       apiKey: config.apiKey || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY,
-      provider: config.provider || (process.env.ANTHROPIC_API_KEY ? 'anthropic' : process.env.GEMINI_API_KEY ? 'gemini' : 'openai'),
-      model: config.model || 'gpt-5.6-luna',
+      provider,
+      model: provider === 'anthropic' && !requestedModel.toLowerCase().includes('claude')
+        ? 'claude-sonnet-5'
+        : provider === 'gemini' && !requestedModel.toLowerCase().includes('gemini')
+          ? 'gemini-1.5-pro'
+          : requestedModel,
       temperature: config.temperature ?? 0.2,
     };
   }
