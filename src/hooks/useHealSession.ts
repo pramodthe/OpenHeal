@@ -42,6 +42,7 @@ export function useHealSession() {
   const [runEndedAt, setRunEndedAt] = useState<number | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
+  const terminalStatusRef = useRef<string | null>(null);
 
   const mapPatchEntries = (patches: any[], fallbackDiff?: string): DiffFileEntry[] =>
     patches.map((p: any) => ({
@@ -74,6 +75,8 @@ export function useHealSession() {
   /** Single place where status and the tape stay in step. */
   const applyStatus = useCallback(
     (next: string) => {
+      if (terminalStatusRef.current === 'REJECTED' && next !== 'REJECTED') return;
+
       setSessionStatus(next);
       const phase = phaseForStatus(next);
       if (phase) {
@@ -125,6 +128,10 @@ export function useHealSession() {
         break;
       case 'agent.status':
         if (payload?.message) addLog(payload.message, 'agent');
+        if (payload.status === 'failed') {
+          closeOpenPhase('bad');
+          break;
+        }
         if (payload.status === 'running') {
           if (payload.agent === 'diagnostic') applyStatus('DIAGNOSING');
           if (payload.agent === 'patcher') applyStatus('SYNTHESIZING');
@@ -241,6 +248,7 @@ export function useHealSession() {
     credentials?: HealLaunchCredentials
   ) => {
     const startedAt = Date.now();
+    terminalStatusRef.current = null;
     setIsLoading(true);
     setErrorMessage('');
     setApprovalPayload(null);
@@ -311,6 +319,7 @@ export function useHealSession() {
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'The patch could not be sent back.');
       setApprovalPayload(null);
+      terminalStatusRef.current = 'REJECTED';
       applyStatus('REJECTED');
     } catch (err: any) {
       setErrorMessage(err.message);
@@ -320,6 +329,7 @@ export function useHealSession() {
   const resetSession = () => {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
+    terminalStatusRef.current = null;
     setSessionId('');
     setSessionStatus('IDLE');
     setIsLoading(false);

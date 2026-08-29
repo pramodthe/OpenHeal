@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Check, Columns2, Copy, Rows3 } from 'lucide-react';
 import {
   buildRows,
@@ -53,6 +53,10 @@ export function PatchView({ files = [], activeFileIndex = 0, placeholderPath }: 
   const [copied, setCopied] = useState(false);
 
   const file = files[selected] ?? files[0];
+
+  useEffect(() => {
+    setExpanded(new Set());
+  }, [file?.filePath]);
 
   const rows = useMemo(
     () => (file ? buildRows(file.originalContent || '', file.patchedContent || '') : []),

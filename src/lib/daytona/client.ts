@@ -85,6 +85,17 @@ export function isLocalDirectory(target: string): boolean {
   }
 }
 
+/** POSIX single-quote escaping for shell arguments built from filesystem paths. */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function assertCommandOk(result: CommandResult, context: string): void {
+  if (result.exitCode !== 0) {
+    throw new GitCloneError(`${context}: ${result.stderr || result.stdout}`);
+  }
+}
+
 /** Walks a local directory into POSIX-relative paths plus their contents. */
 export function collectLocalFiles(
   root: string
@@ -224,7 +235,7 @@ export class DaytonaRemoteSandbox implements ISandboxInstance {
       if (this.rawDaytonaSandbox?.fs?.readFile) {
         return await this.rawDaytonaSandbox.fs.readFile(remotePath);
       }
-      const res = await this.executeCommand(`cat "${remotePath}"`);
+      const res = await this.executeCommand(`cat ${shellQuote(remotePath)}`);
       if (res.exitCode !== 0) {
         throw new FileSystemError(`File not found: ${remotePath}`);
       }
@@ -242,12 +253,20 @@ export class DaytonaRemoteSandbox implements ISandboxInstance {
     this.assertRunning();
     try {
       if (this.rawDaytonaSandbox?.fs?.uploadFile) {
-        await this.rawDaytonaSandbox.fs.uploadFile(remotePath, content);
+        // The SDK takes (source, remotePath) — and a *string* source means "read
+        // this local file". Passing our content as a Buffer is what uploads the
+        // bytes we actually hold.
+        const buffer = typeof content === 'string' ? Buffer.from(content, 'utf-8') : content;
+        await this.rawDaytonaSandbox.fs.uploadFile(buffer, remotePath);
         return;
       }
       const text = typeof content === 'string' ? content : content.toString('utf-8');
       const b64 = Buffer.from(text).toString('base64');
-      await this.executeCommand(`mkdir -p "$(dirname "${remotePath}")" && echo "${b64}" | base64 -d > "${remotePath}"`);
+      const quotedPath = shellQuote(remotePath);
+      const quotedDir = shellQuote(nodePath.posix.dirname(remotePath));
+      await this.executeCommand(
+        `mkdir -p ${quotedDir} && printf '%s' ${shellQuote(b64)} | base64 -d > ${quotedPath}`
+      );
     } catch (err: any) {
       throw new FileSystemError(`Daytona fs.uploadFile failed for ${remotePath}: ${err.message}`);
     }
@@ -278,7 +297,7 @@ export class DaytonaRemoteSandbox implements ISandboxInstance {
         return;
       }
       const flag = recursive ? '-rf' : '-f';
-      await this.executeCommand(`rm ${flag} "${remotePath}"`);
+      await this.executeCommand(`rm ${flag} ${shellQuote(remotePath)}`);
     } catch (err: any) {
       throw new FileSystemError(`Daytona fs.deleteFile failed for ${remotePath}: ${err.message}`);
     }
@@ -290,7 +309,7 @@ export class DaytonaRemoteSandbox implements ISandboxInstance {
       if (this.rawDaytonaSandbox?.fs?.listFiles) {
         return await this.rawDaytonaSandbox.fs.listFiles(dirPath);
       }
-      const res = await this.executeCommand(`ls -la "${dirPath}" 2>/dev/null || true`);
+      const res = await this.executeCommand(`ls -la ${shellQuote(dirPath)} 2>/dev/null || true`);
       const lines = res.stdout.split('\n').filter((l) => l.trim().length > 0 && !l.startsWith('total'));
       const entries: FileEntry[] = [];
       for (const line of lines) {
@@ -322,11 +341,12 @@ export class DaytonaRemoteSandbox implements ISandboxInstance {
     }
 
     try {
-      await this.executeCommand(`mkdir -p "${this.workspaceDir}"`);
+      await this.executeCommand(`mkdir -p ${shellQuote(this.workspaceDir)}`);
       const branchFlag = branch ? `-b ${branch}` : '';
-      const cloneRes = await this.executeCommand(`git clone ${branchFlag} "${repoUrl}" "${this.repoDir}"`, {
-        cwd: this.workspaceDir,
-      });
+      const cloneRes = await this.executeCommand(
+        `git clone ${branchFlag} ${shellQuote(repoUrl)} ${shellQuote(this.repoDir)}`,
+        { cwd: this.workspaceDir }
+      );
 
       if (cloneRes.exitCode !== 0) {
         throw new GitCloneError(`git clone failed: ${cloneRes.stderr || cloneRes.stdout}`);
@@ -336,6 +356,7 @@ export class DaytonaRemoteSandbox implements ISandboxInstance {
       await this.executeCommand('git config user.email "swarm@openheal.ai"', { cwd: this.repoDir });
 
       const headRes = await this.executeCommand('git rev-parse HEAD', { cwd: this.repoDir });
+      assertCommandOk(headRes, 'git rev-parse HEAD after clone');
       return {
         repoPath: this.repoDir,
         headCommit: headRes.stdout.trim(),
@@ -360,31 +381,36 @@ export class DaytonaRemoteSandbox implements ISandboxInstance {
         throw new GitCloneError(`No uploadable files found in ${localDir}`);
       }
 
-      await this.executeCommand(`mkdir -p "${this.repoDir}"`);
+      await this.executeCommand(`mkdir -p ${shellQuote(this.repoDir)}`);
 
-      // One mkdir for every directory we are about to write into, so uploads
-      // never race against a missing parent.
       const dirs = [...new Set(files.map((f) => nodePath.posix.dirname(f.relativePath)))]
         .filter((d) => d && d !== '.')
         .sort();
-      if (dirs.length > 0) {
-        const quoted = dirs.map((d) => `"${this.repoDir}/${d}"`).join(' ');
-        await this.executeCommand(`mkdir -p ${quoted}`);
+      for (const d of dirs) {
+        const mkdirRes = await this.executeCommand(`mkdir -p ${shellQuote(`${this.repoDir}/${d}`)}`);
+        assertCommandOk(mkdirRes, `mkdir -p ${d}`);
       }
 
       for (const file of files) {
         await this.uploadFile(`${this.repoDir}/${file.relativePath}`, file.content);
       }
 
-      await this.executeCommand('git init', { cwd: this.repoDir });
+      assertCommandOk(await this.executeCommand('git init', { cwd: this.repoDir }), 'git init');
       await this.executeCommand('git config user.name "OpenHeal Swarm"', { cwd: this.repoDir });
       await this.executeCommand('git config user.email "swarm@openheal.ai"', { cwd: this.repoDir });
-      await this.executeCommand('git add -A', { cwd: this.repoDir });
-      await this.executeCommand('git commit -m "Baseline before OpenHeal" --allow-empty', {
-        cwd: this.repoDir,
-      });
+      assertCommandOk(
+        await this.executeCommand('git add -A', { cwd: this.repoDir }),
+        'git add -A'
+      );
+      assertCommandOk(
+        await this.executeCommand('git commit -m "Baseline before OpenHeal" --allow-empty', {
+          cwd: this.repoDir,
+        }),
+        'git commit baseline'
+      );
 
       const headRes = await this.executeCommand('git rev-parse HEAD', { cwd: this.repoDir });
+      assertCommandOk(headRes, 'git rev-parse HEAD after seed');
       return {
         repoPath: this.repoDir,
         headCommit: headRes.stdout.trim(),

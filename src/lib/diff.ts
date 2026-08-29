@@ -96,13 +96,19 @@ function lcsOps(a: string[], b: string[]): Op[] {
   return ops;
 }
 
+/** Split file content into diff lines; a truly empty file has zero lines. */
+function splitLines(content: string): string[] {
+  if (content === '') return [];
+  return content.split('\n');
+}
+
 /**
  * Aligns the two files into rows. Adjacent deletions and insertions are paired
  * into `change` rows so the split view lines up the before and after.
  */
 export function buildRows(original: string, patched: string): DiffRow[] {
-  const a = original.split('\n');
-  const b = patched.split('\n');
+  const a = splitLines(original);
+  const b = splitLines(patched);
   const ops = lcsOps(a, b);
 
   const rows: DiffRow[] = [];

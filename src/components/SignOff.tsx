@@ -138,7 +138,7 @@ export function SignOff({
               ) : (
                 <Undo2 className="h-3.5 w-3.5" strokeWidth={2} />
               )}
-              {revising ? 'Confirm send back' : 'Send back'}
+              {revising ? 'Confirm rejection' : 'Reject run'}
             </button>
             <button
               onClick={approve}
@@ -170,8 +170,8 @@ export function SignOff({
             className="mt-1.5 w-full rounded border border-rule bg-paper px-3 py-2 text-[13px] text-ink placeholder:text-ink-3 focus:border-signal focus:outline-none"
           />
           <p className="mt-1.5 text-[12px] text-ink-2">
-            The patch agent gets this note and tries again. Leave it blank to send
-            the patch back without guidance.
+            This ends the run without opening a pull request. Your note is saved in the
+            session log for reference.
           </p>
         </div>
       )}

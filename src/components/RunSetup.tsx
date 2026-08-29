@@ -39,6 +39,23 @@ const MODELS: Array<{ value: string; label: string; group: string }> = [
 const FIELD =
   'w-full rounded border border-rule bg-card px-2.5 py-1.5 text-[12px] text-ink placeholder:text-ink-3 focus:border-signal focus:outline-none';
 
+const LANGUAGE_PRESETS: Record<
+  ScenarioItem['language'],
+  { testCommand: string; testFramework: ScenarioItem['testFramework']; ext: string }
+> = {
+  python: { testCommand: 'pytest tests/', testFramework: 'pytest', ext: 'py' },
+  node: { testCommand: 'npm test', testFramework: 'jest', ext: 'ts' },
+  rust: { testCommand: 'cargo test', testFramework: 'cargo', ext: 'rs' },
+  go: { testCommand: 'go test ./...', testFramework: 'gotest', ext: 'go' },
+};
+
+const SOURCE_PLACEHOLDER = `# Optional — paste code to overlay before the baseline run
+def calculate_discount(price: float, discount_pct: float) -> float:
+    if discount_pct < 0:
+        return price
+    return price * (1 - discount_pct)
+`;
+
 export function RunSetup({
   scenarios = [],
   selectedScenarioId,
@@ -50,12 +67,8 @@ export function RunSetup({
   const [selectedId, setSelectedId] = useState(selectedScenarioId || scenarios[0]?.id || '');
   const [repoUrl, setRepoUrl] = useState('https://github.com/my-org/backend-service');
   const [language, setLanguage] = useState<ScenarioItem['language']>('python');
-  const [testCommand, setTestCommand] = useState('pytest tests/');
-  const [source, setSource] = useState(`def calculate_discount(price: float, discount_pct: float) -> float:
-    if discount_pct < 0:
-        return price
-    return price * (1 - discount_pct)
-`);
+  const [testCommand, setTestCommand] = useState(LANGUAGE_PRESETS.python.testCommand);
+  const [source, setSource] = useState('');
   const [llmKey, setLlmKey] = useState('');
   const [githubToken, setGithubToken] = useState('');
   const [daytonaKey, setDaytonaKey] = useState('');
@@ -72,21 +85,28 @@ export function RunSetup({
     };
 
     if (tab === 'repo') {
+      const preset = LANGUAGE_PRESETS[language];
       const custom: ScenarioItem = {
         id: 'custom-live-repo',
         name: 'Your repository',
         language,
         description: 'A live run against your own repository.',
-        testFramework: language === 'python' ? 'pytest' : language === 'node' ? 'jest' : 'cargo',
+        testFramework: preset.testFramework,
         targetRepoUrl: repoUrl.trim(),
-        targetFiles: [
-          `src/main.${language === 'python' ? 'py' : language === 'node' ? 'ts' : 'rs'}`,
-        ],
+        targetFiles: [`src/main.${preset.ext}`],
         expectedBugType: 'RuntimeError',
         estimatedDurationMs: 4000,
-        testCommand: testCommand.trim() || 'pytest',
+        testCommand: testCommand.trim() || preset.testCommand,
       };
-      void onStartHeal(custom, repoUrl.trim(), source.trim(), undefined, credentials);
+      onSelectScenario(custom);
+      const overlay = source.trim();
+      void onStartHeal(
+        custom,
+        repoUrl.trim(),
+        overlay || undefined,
+        undefined,
+        credentials
+      );
     } else if (current) {
       void onStartHeal(current, undefined, undefined, undefined, credentials);
     }
@@ -159,7 +179,11 @@ export function RunSetup({
             <select
               className={FIELD}
               value={language}
-              onChange={(e) => setLanguage(e.target.value as ScenarioItem['language'])}
+              onChange={(e) => {
+                const next = e.target.value as ScenarioItem['language'];
+                setLanguage(next);
+                setTestCommand(LANGUAGE_PRESETS[next].testCommand);
+              }}
             >
               <option value="python">Python</option>
               <option value="node">Node / TypeScript</option>
@@ -182,6 +206,7 @@ export function RunSetup({
               className={`${FIELD} font-mono`}
               rows={6}
               value={source}
+              placeholder={SOURCE_PLACEHOLDER}
               onChange={(e) => setSource(e.target.value)}
             />
           </Field>

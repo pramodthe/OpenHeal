@@ -59,6 +59,12 @@ export default function ConsolePage() {
   // One derivation of +/- for the tape, the patch toolbar, and the sign-off card.
   const patchStats = useMemo(() => statsForFiles(diffFiles), [diffFiles]);
 
+  const handleNewRun = () => {
+    resetSession();
+    setPane('patch');
+    setLogOpen(true);
+  };
+
   const tone = statusTone(sessionStatus, isStreaming);
 
   return (
@@ -90,7 +96,7 @@ export default function ConsolePage() {
           <StatusPill label={tone.label} tone={tone.tone} />
           {sessionId && (
             <button
-              onClick={resetSession}
+              onClick={handleNewRun}
               className="rounded border border-rule-strong bg-paper px-2.5 py-1 text-[12px] text-ink transition-colors hover:bg-paper-2"
             >
               New run
