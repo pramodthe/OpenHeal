@@ -56,6 +56,15 @@ export function RunSetup({
         return price
     return price * (1 - discount_pct)
 `);
+  const changeLanguage = (next: ScenarioItem['language']) => {
+    setLanguage(next);
+    // Preserve edits, but do not carry Python defaults into another language.
+    if (testCommand === 'pytest tests/') {
+      setTestCommand(next === 'python' ? 'pytest tests/' : next === 'node' ? 'npm test' : next === 'rust' ? 'cargo test' : 'go test ./...');
+    }
+    if (source.startsWith('def calculate_discount(')) setSource('');
+  };
+
   const [llmKey, setLlmKey] = useState('');
   const [githubToken, setGithubToken] = useState('');
   const [daytonaKey, setDaytonaKey] = useState('');
@@ -159,7 +168,7 @@ export function RunSetup({
             <select
               className={FIELD}
               value={language}
-              onChange={(e) => setLanguage(e.target.value as ScenarioItem['language'])}
+              onChange={(e) => changeLanguage(e.target.value as ScenarioItem['language'])}
             >
               <option value="python">Python</option>
               <option value="node">Node / TypeScript</option>
