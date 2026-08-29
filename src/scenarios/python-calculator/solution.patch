@@ -1,0 +1,9 @@
+--- a/calculator/calculator.py
++++ b/calculator/calculator.py
+@@ -14,3 +14,5 @@
+     def divide(self, a: float, b: float) -> float:
+-        # BUG: Uses integer division instead of float division and doesn't handle division by zero
+-        return a // b
++        if b == 0:
++            raise ValueError("Cannot divide by zero")
++        return a / b

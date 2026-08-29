@@ -1,0 +1,18 @@
+{
+  "name": "node-api-cache",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Sample broken Node.js API LRU cache for OpenHeal benchmark",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --experimental-strip-types --test tests/cache.test.ts"
+  },
+  "keywords": ["cache", "lru", "openheal"],
+  "author": "OpenHeal Swarm",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}

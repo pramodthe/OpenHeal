@@ -1,0 +1,7 @@
+[package]
+name = "rust-parser"
+version = "0.1.0"
+edition = "2021"
+description = "Sample broken Rust JSON/Token parser for OpenHeal benchmark"
+
+[dependencies]

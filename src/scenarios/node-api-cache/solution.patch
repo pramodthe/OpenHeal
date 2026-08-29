@@ -1,0 +1,21 @@
+--- a/src/cache.ts
++++ b/src/cache.ts
+@@ -24,2 +24,6 @@
+-    // BUG: Missing refresh of key in Map to mark it as most recently used
++    // Refresh access order (delete and re-insert)
++    this.store.delete(key);
++    this.store.set(key, entry);
++
+     return entry.value;
+@@ -33,4 +37,4 @@
+     } else if (this.store.size >= this.maxSize) {
+-      // BUG: Instead of evicting the oldest key (first key), it deletes the current key or doesn't delete the first key properly
+-      const keys = Array.from(this.store.keys());
+-      const newestKey = keys[keys.length - 1]; // Wrong: evicts most recent!
+-      if (newestKey) {
+-        this.store.delete(newestKey);
++      // Evict least recently used (first key in Map iterator)
++      const oldestKey = this.store.keys().next().value;
++      if (oldestKey !== undefined) {
++        this.store.delete(oldestKey);
+       }

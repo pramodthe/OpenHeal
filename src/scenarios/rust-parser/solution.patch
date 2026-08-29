@@ -1,0 +1,17 @@
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -42,2 +42,12 @@
+                 while i < chars.len() {
++                    if chars[i] == '\\' && i + 1 < chars.len() {
++                        let next_ch = chars[i + 1];
++                        if next_ch == '"' {
++                            string_val.push('"');
++                            i += 2;
++                            continue;
++                        } else if next_ch == '\\' {
++                            string_val.push('\\');
++                            i += 2;
++                            continue;
++                        }
++                    }
+                     if chars[i] == '"' {
