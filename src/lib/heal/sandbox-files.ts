@@ -68,6 +68,8 @@ async function walk(
     const ext = extensionOf(entry.name);
     if (ext && !TEXT_EXT.has(ext) && entry.name !== 'Dockerfile') continue;
     if (entry.name.endsWith('.png') || entry.name.endsWith('.jpg')) continue;
+    // Reference solutions shipped with bundled demos — not part of the workspace under repair.
+    if (entry.name.startsWith('fixed_') || entry.name === 'solution.patch') continue;
 
     try {
       const content = await sandbox.readFile(full);

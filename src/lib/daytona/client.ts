@@ -253,9 +253,7 @@ export class DaytonaRemoteSandbox implements ISandboxInstance {
     this.assertRunning();
     try {
       if (this.rawDaytonaSandbox?.fs?.uploadFile) {
-        // The SDK takes (source, remotePath) — and a *string* source means "read
-        // this local file". Passing our content as a Buffer is what uploads the
-        // bytes we actually hold.
+        await this.ensureRemoteDir(nodePath.posix.dirname(remotePath));
         const buffer = typeof content === 'string' ? Buffer.from(content, 'utf-8') : content;
         await this.rawDaytonaSandbox.fs.uploadFile(buffer, remotePath);
         return;
@@ -270,6 +268,27 @@ export class DaytonaRemoteSandbox implements ISandboxInstance {
     } catch (err: any) {
       throw new FileSystemError(`Daytona fs.uploadFile failed for ${remotePath}: ${err.message}`);
     }
+  }
+
+  /** Prefer the Daytona FS API — remote sandboxes may not have zsh for shell commands. */
+  private async ensureRemoteDir(remotePath: string): Promise<void> {
+    if (!remotePath || remotePath === '.' || remotePath === '/') return;
+    if (this.rawDaytonaSandbox?.fs?.createFolder) {
+      const parts = remotePath.split('/').filter(Boolean);
+      let current = remotePath.startsWith('/') ? '' : '';
+      for (const part of parts) {
+        current = current ? `${current}/${part}` : part.startsWith('/') ? part : `/${part}`;
+        if (!current.startsWith('/')) current = `/${current}`;
+        try {
+          await this.rawDaytonaSandbox.fs.createFolder(current, '755');
+        } catch {
+          // Folder may already exist — keep walking the path.
+        }
+      }
+      return;
+    }
+    const res = await this.executeCommand(`mkdir -p ${shellQuote(remotePath)}`);
+    assertCommandOk(res, `mkdir -p ${remotePath}`);
   }
 
   public async downloadFile(remotePath: string, localDestinationPath: string): Promise<void> {
@@ -381,14 +400,13 @@ export class DaytonaRemoteSandbox implements ISandboxInstance {
         throw new GitCloneError(`No uploadable files found in ${localDir}`);
       }
 
-      await this.executeCommand(`mkdir -p ${shellQuote(this.repoDir)}`);
+      await this.ensureRemoteDir(this.repoDir);
 
       const dirs = [...new Set(files.map((f) => nodePath.posix.dirname(f.relativePath)))]
         .filter((d) => d && d !== '.')
         .sort();
       for (const d of dirs) {
-        const mkdirRes = await this.executeCommand(`mkdir -p ${shellQuote(`${this.repoDir}/${d}`)}`);
-        assertCommandOk(mkdirRes, `mkdir -p ${d}`);
+        await this.ensureRemoteDir(`${this.repoDir}/${d}`);
       }
 
       for (const file of files) {

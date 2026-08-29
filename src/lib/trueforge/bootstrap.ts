@@ -51,10 +51,57 @@ export function normalizeModelName(name: string): string {
   return name.trim().toLowerCase().replace(/\./g, '-');
 }
 
+/** Strip provider prefix so `gpt-5.6-luna` matches `openai/gpt-5-6-luna`. */
+export function modelBaseName(name: string): string {
+  const normalized = normalizeModelName(name);
+  const slash = normalized.lastIndexOf('/');
+  return slash >= 0 ? normalized.slice(slash + 1) : normalized;
+}
+
 export function resolveModelAgainstCatalog(requested: string, catalog: string[]): string | undefined {
   if (catalog.includes(requested)) return requested;
   const wanted = normalizeModelName(requested);
-  return catalog.find((candidate) => normalizeModelName(candidate) === wanted);
+  const exact = catalog.find((candidate) => normalizeModelName(candidate) === wanted);
+  if (exact) return exact;
+  const base = modelBaseName(requested);
+  return catalog.find((candidate) => modelBaseName(candidate) === base);
+}
+
+function pickDefaultCatalogModel(catalog: string[]): string | undefined {
+  if (catalog.length === 0) return undefined;
+  if (process.env.OPENAI_API_KEY?.trim()) {
+    const openai = catalog.find((name) => name.startsWith('openai/'));
+    if (openai) return openai;
+  }
+  return catalog[0];
+}
+
+/** Push OPENAI_API_KEY from .env into the local TrueForge server when configured. */
+export async function ensureOpenAiModelProvider(apiKey?: string): Promise<void> {
+  const key = apiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
+  if (!key) return;
+
+  const catalogRes = await tfFetch('/api/v1/catalogs/model-providers');
+  if (!catalogRes.ok) return;
+  const catalogBody = (await catalogRes.json()) as {
+    data?: Array<{ type?: string; models?: unknown[] }>;
+  };
+  const preset = catalogBody.data?.find((item) => item.type === 'openai');
+  if (!preset?.models) return;
+
+  const res = await tfFetch('/api/v1/settings/model-providers', {
+    method: 'PUT',
+    body: JSON.stringify({
+      manifest: {
+        type: 'openai',
+        auth: { api_key: key },
+        models: preset.models,
+      },
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`OpenAI model provider sync failed (${res.status}): ${await res.text()}`);
+  }
 }
 
 export async function ensureDaytonaSandboxProvider(apiKey?: string): Promise<'daytona' | 'local-fallback'> {
@@ -139,6 +186,12 @@ export async function bootstrapTrueForge(input: {
     warnings,
   };
 
+  try {
+    await ensureOpenAiModelProvider();
+  } catch (err) {
+    warnings.push(err instanceof Error ? err.message : String(err));
+  }
+
   let catalog: string[];
   try {
     catalog = await listTrueForgeModels();
@@ -166,7 +219,7 @@ export async function bootstrapTrueForge(input: {
       );
     }
   }
-  if (!report.model) report.model = catalog[0];
+  if (!report.model) report.model = pickDefaultCatalogModel(catalog);
 
   try {
     report.sandboxProvider = await ensureDaytonaSandboxProvider(input.daytonaKey);

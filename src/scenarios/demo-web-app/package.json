@@ -1,0 +1,9 @@
+{
+  "name": "openheal-demo-web-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "build": "echo 'static demo — no build step'"
+  }
+}

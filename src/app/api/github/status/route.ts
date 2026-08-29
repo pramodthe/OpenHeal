@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getActiveGithubConnection, isComposioConfigured } from '@/lib/composio/client';
+import { getActiveGithubConnection, githubConnectionHasWebhookScope, isComposioConfigured } from '@/lib/composio/client';
 import { ensureComposioUserId } from '@/lib/composio/user';
 
 export async function GET() {
@@ -24,6 +24,7 @@ export async function GET() {
       userId,
       accountId: account?.id,
       status: account?.status || 'DISCONNECTED',
+      webhookScopeOk: account ? githubConnectionHasWebhookScope(account) : false,
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to check GitHub connection';

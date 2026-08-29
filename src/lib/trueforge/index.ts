@@ -6,3 +6,7 @@ export * from './harness.ts';
 export * from './swarm/diagnostic.ts';
 export * from './swarm/patcher.ts';
 export * from './swarm/verifier.ts';
+export * from './swarm/buildops.ts';
+export * from './swarm/explorer.ts';
+export * from './swarm/reporter.ts';
+export * from './heal-agent.ts';

@@ -9,6 +9,8 @@
 
 export type PhaseId =
   | 'sandbox'
+  | 'buildops'
+  | 'explorer'
   | 'baseline'
   | 'diagnose'
   | 'patch'
@@ -33,6 +35,18 @@ export const PHASES: PhaseSpec[] = [
     label: 'Sandbox',
     blurb: 'Provisions an isolated container and clones the repository.',
     actor: 'Daytona',
+  },
+  {
+    id: 'buildops',
+    label: 'BuildOps',
+    blurb: 'Installs dependencies, builds, and starts the application.',
+    actor: 'BuildOps agent',
+  },
+  {
+    id: 'explorer',
+    label: 'Explorer',
+    blurb: 'Exercises user flows and captures behavioral evidence.',
+    actor: 'Explorer agent',
   },
   {
     id: 'baseline',
@@ -86,6 +100,10 @@ export function phaseForStatus(status: string): PhaseId | null {
     case 'INIT':
     case 'PROVISIONING_SANDBOX':
       return 'sandbox';
+    case 'BUILDING':
+      return 'buildops';
+    case 'EXPLORING':
+      return 'explorer';
     case 'CAPTURING_BASELINE':
       return 'baseline';
     case 'DIAGNOSING':
@@ -117,6 +135,10 @@ export function statusTone(status: string, isStreaming = false): StatusTone {
     case 'INIT':
     case 'PROVISIONING_SANDBOX':
       return { label: 'Provisioning sandbox', tone: 'working' };
+    case 'BUILDING':
+      return { label: 'BuildOps running', tone: 'working' };
+    case 'EXPLORING':
+      return { label: 'Explorer testing', tone: 'working' };
     case 'CAPTURING_BASELINE':
       return { label: 'Running baseline', tone: 'working' };
     case 'DIAGNOSING':

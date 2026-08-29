@@ -109,6 +109,7 @@ export class LiveLLMProvider {
     originalContent: string;
     failingLog: string;
     testCommand?: string;
+    scenarioId?: string;
   }): Promise<LLMPatchResponse> {
     const prompt = `You are OpenHeal, an expert AI software engineer fixing a failing test.
 TASK: Analyze the failing log and the original file, then provide a minimal, surgically scoped bug fix. DO NOT refactor unrelated code.
@@ -313,9 +314,14 @@ Return a valid JSON object ONLY with the following schema:
     filePath: string;
     originalContent: string;
     failingLog: string;
+    scenarioId?: string;
   }): LLMPatchResponse {
-    const heuristic = applyScenarioHeuristicPatch(params.filePath, params.originalContent);
-    if (!allowHeuristicPatches()) {
+    const heuristic = applyScenarioHeuristicPatch(
+      params.filePath,
+      params.originalContent,
+      params.scenarioId
+    );
+    if (!allowHeuristicPatches(params.scenarioId)) {
       return {
         analysis: 'No live model response and DEMO_OFFLINE is off, so no pre-baked patch was applied.',
         rootCauseFile: params.filePath,

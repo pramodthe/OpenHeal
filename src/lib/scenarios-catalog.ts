@@ -14,6 +14,19 @@ export interface ScenarioItem {
 
 export const SCENARIO_CATALOG: ScenarioItem[] = [
   {
+    id: 'demo-web-app',
+    name: 'Demo Web App (Behavioral UI bugs)',
+    language: 'node',
+    description: 'Small task board with broken submit flow — ideal for Explorer agent PR reviews.',
+    testFramework: 'jest',
+    targetRepoUrl: 'https://github.com/openheal-demo/demo-web-app',
+    targetFiles: ['public/tasks.html', 'public/app.js', 'server.js'],
+    expectedBugType: 'BehavioralRegression',
+    estimatedDurationMs: 6000,
+    testCommand: 'npm start',
+    baselineLogSnippet: 'Explorer: broken-submit on /tasks.html',
+  },
+  {
     id: 'python-calculator',
     name: 'Python Calculator (Div/0 & Float Precision)',
     language: 'python',
@@ -53,3 +66,6 @@ export const SCENARIO_CATALOG: ScenarioItem[] = [
     baselineLogSnippet: 'test tests::test_tokenize_escaped_quotes_in_string ... FAILED',
   },
 ];
+
+/** Bundled scenarios that run the self-heal pipeline (excludes review-only demo-web-app). */
+export const HEAL_LAB_SCENARIOS = SCENARIO_CATALOG.filter((s) => s.id !== 'demo-web-app');

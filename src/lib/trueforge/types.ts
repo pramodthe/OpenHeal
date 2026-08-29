@@ -10,6 +10,8 @@
 export type SessionStatus =
   | 'INIT'
   | 'PROVISIONING_SANDBOX'
+  | 'BUILDING'
+  | 'EXPLORING'
   | 'CAPTURING_BASELINE'
   | 'DIAGNOSING'
   | 'SYNTHESIZING'

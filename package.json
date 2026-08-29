@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "next lint",
     "test": "NODE_ENV=test node --experimental-strip-types tests/e2e/runner.ts",
-    "trueforge": "npx --yes @truefoundry/trueforge"
+    "trueforge": "npx --yes @truefoundry/trueforge",
+    "tunnel": "node scripts/tunnel.mjs"
   },
   "dependencies": {
     "@composio/core": "^0.17.0",

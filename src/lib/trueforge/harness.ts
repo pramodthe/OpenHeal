@@ -17,6 +17,7 @@ import type {
 } from './types.ts';
 import { sessionManager } from './session.ts';
 import { eventBus, createTurnStream } from './event-bus.ts';
+import { traceLocalStep } from './turn-tracer.ts';
 import { hitlGate } from './hitl-gate.ts';
 import { diagnosticSubagent } from './swarm/diagnostic.ts';
 import { patchSynthesizerSubagent } from './swarm/patcher.ts';
@@ -24,6 +25,7 @@ import { regressionVerifierSubagent } from './swarm/verifier.ts';
 import { calculateQodoScorecard } from '../qodo/scorecard.ts';
 import { createPullRequestFromSession } from '../heal/github.ts';
 import { destroySessionSandbox } from '../heal/sandbox-registry.ts';
+import { resolveBundledScenarioDir } from '../heal/scenarios.ts';
 import type { LLMConfig } from '../llm/provider.ts';
 
 export interface HarnessExecutionOptions {
@@ -31,6 +33,7 @@ export interface HarnessExecutionOptions {
   repoFiles?: Map<string, string> | Record<string, string>;
   baselineLog?: string;
   testCommand?: string;
+  scenarioId?: string;
   qodoScorecard?: QodoScorecardResult;
   deferLoop?: boolean;
   llmConfig?: LLMConfig;
@@ -101,6 +104,11 @@ export class TrueForgeHarness {
     let currentAttempt = session.currentAttempt || 0;
 
     const orchThreadId = sessionManager.createThread(sessionId, 'orchestrator');
+
+    traceLocalStep(sessionId, orchThreadId, 'turn.created', {
+      turn_id: `local_${sessionId}`,
+      state: { status: 'running' },
+    });
 
     // 1. CAPTURING_BASELINE / Baseline Ingestion
     console.log(`[HARNESS] State: CAPTURING_BASELINE`);
@@ -179,6 +187,11 @@ export class TrueForgeHarness {
     sessionManager.transitionStatus(sessionId, 'DIAGNOSING');
     const diagThreadId = sessionManager.createThread(sessionId, 'diagnostic', currentAttempt + 1);
 
+    traceLocalStep(sessionId, diagThreadId, 'thread.created', {
+      thread_id: diagThreadId,
+      title: 'diagnostic',
+    }, 'Subagent started: diagnostic');
+
     eventBus.emitEvent(sessionId, orchThreadId, 'agent.status', {
       agent: 'diagnostic',
       status: 'running',
@@ -200,6 +213,12 @@ export class TrueForgeHarness {
       status: 'completed',
       message: `Diagnostic complete: ${diagnosticReport.failureType} at ${diagnosticReport.primaryRootCauseLocation.filePath}:${diagnosticReport.primaryRootCauseLocation.startLine}`,
     });
+
+    traceLocalStep(sessionId, diagThreadId, 'thread.done', {
+      thread_id: diagThreadId,
+      title: 'diagnostic',
+      state: { status: 'done' },
+    }, `Subagent done: diagnostic → ${diagnosticReport.failureType}`);
 
     // Iterative Synthesis & Verification Loop
     let verifiedSuccessfully = false;
@@ -225,7 +244,8 @@ export class TrueForgeHarness {
         repoFiles,
         currentAttempt,
         undefined,
-        options.llmConfig
+        options.llmConfig,
+        options.scenarioId
       );
 
       sessionManager.recordPatchResult(sessionId, patchResult);
@@ -322,6 +342,26 @@ export class TrueForgeHarness {
     const scorecard: QodoScorecardResult = options.qodoScorecard || this.buildScorecard(latest);
     sessionManager.setQodoScorecard(sessionId, scorecard);
     eventBus.emitEvent(sessionId, orchThreadId, 'qodo.scorecard', scorecard);
+
+    // Bundled lab fixtures have no real GitHub repo — stop after a green verify.
+    if (options.scenarioId && resolveBundledScenarioDir(options.scenarioId)) {
+      sessionManager.transitionStatus(sessionId, 'COMPLETED');
+      eventBus.emitEvent(sessionId, orchThreadId, 'agent.status', {
+        agent: 'orchestrator',
+        status: 'completed',
+        message: 'Lab scenario healed — all tests pass. No PR opened for bundled fixtures.',
+      });
+      eventBus.emitEvent(sessionId, orchThreadId, 'session.completed', {
+        sessionId,
+        status: 'COMPLETED',
+        durationMs: Date.now() - new Date(session.createdAt).getTime(),
+      });
+      traceLocalStep(sessionId, orchThreadId, 'turn.done', {
+        state: { status: 'done', output: { content: 'Lab scenario healed' } },
+      });
+      await destroySessionSandbox(sessionId);
+      return sessionManager.getRequiredSession(sessionId);
+    }
 
     // 5. PRIVILEGED TOOL INTERCEPTION & HITL APPROVAL GATE
     const activePatch = sessionManager.getRequiredSession(sessionId).activePatch;

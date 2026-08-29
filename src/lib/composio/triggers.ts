@@ -12,6 +12,8 @@ import { getComposio } from './client.ts';
 export const OPENHEAL_BRANCH_PREFIX = 'openheal/';
 
 export const HEAL_TRIGGER_SLUGS = {
+  /** PR opened, synchronized, or reopened — primary Ito-like entry. */
+  prOpened: 'GITHUB_PULL_REQUEST_EVENT',
   /** A failing CI check already contains a real failure trace — the cleanest entry. */
   checkRun: 'GITHUB_CHECK_RUN_STATUS_CHANGED_TRIGGER',
   issueOpened: 'GITHUB_ISSUE_ADDED_EVENT',
@@ -26,8 +28,14 @@ export interface TriggerDecision {
   kind?: HealTriggerKind;
   repoUrl?: string;
   repoFullName?: string;
+  prNumber?: number;
+  prUrl?: string;
+  headBranch?: string;
+  headSha?: string;
   prompt?: string;
   dedupeKey?: string;
+  mode?: 'review' | 'heal';
+  autoFix?: boolean;
 }
 
 /**
@@ -105,6 +113,40 @@ export function classifyTriggerPayload(payload: Record<string, unknown>): Trigge
     return { act: false, reason: 'Event carried no repository reference' };
   }
 
+  if (slug.includes('PULL_REQUEST') || slug.includes('PR_EVENT')) {
+    const action = str(pick(data, 'action') || data.action).toLowerCase();
+    if (action && !['opened', 'synchronize', 'reopened'].includes(action)) {
+      return { act: false, reason: `PR action "${action}" does not start a review run` };
+    }
+    const draft = pick(data, 'pull_request', 'draft') ?? data.draft;
+    if (draft === true) {
+      return { act: false, reason: 'Draft pull requests are skipped' };
+    }
+    const number = Number(pick(data, 'pull_request', 'number') ?? data.number ?? 0);
+    const prUrl = str(pick(data, 'pull_request', 'html_url') || data.html_url);
+    const headRef = str(pick(data, 'pull_request', 'head', 'ref') || data.head_ref);
+    const headSha = str(pick(data, 'pull_request', 'head', 'sha') || data.head_sha);
+    return {
+      act: true,
+      kind: 'prOpened',
+      mode: 'review',
+      reason: `Pull request #${number || '?'} ${action || 'updated'}`,
+      repoUrl,
+      repoFullName,
+      prNumber: number || undefined,
+      prUrl: prUrl || undefined,
+      headBranch: headRef || undefined,
+      headSha: headSha || undefined,
+      dedupeKey: `pr:${repoFullName}:${number}:${headSha || action}`,
+      prompt:
+        `Review pull request #${number} on ${repoFullName}. ` +
+        `Head branch: ${headRef || 'unknown'}. ` +
+        'Spawn the swarm in order: BuildOps → Explorer → Diagnostic → Reporter. ' +
+        'Build and run the app, explore user flows affected by the diff, diagnose root causes, ' +
+        'and post a structured review comment on the PR with severity, repro steps, and evidence.',
+    };
+  }
+
   if (slug.includes('CHECK_RUN') || slug.includes('CHECK_SUITE')) {
     const conclusion = str(pick(data, 'check_run', 'conclusion') || data.conclusion).toLowerCase();
     if (conclusion !== 'failure' && conclusion !== 'timed_out') {
@@ -115,6 +157,7 @@ export function classifyTriggerPayload(payload: Record<string, unknown>): Trigge
     return {
       act: true,
       kind: 'checkRun',
+      mode: 'heal',
       reason: `CI check "${name}" failed`,
       repoUrl,
       repoFullName,
@@ -142,6 +185,7 @@ export function classifyTriggerPayload(payload: Record<string, unknown>): Trigge
     return {
       act: true,
       kind: 'issueOpened',
+      mode: 'heal',
       reason: `Issue #${number} labelled "${label}"`,
       repoUrl,
       repoFullName,
@@ -161,6 +205,7 @@ export function classifyTriggerPayload(payload: Record<string, unknown>): Trigge
     return {
       act: true,
       kind: 'reviewComment',
+      mode: 'heal',
       reason: `Review comment on PR #${number} mentions @openheal`,
       repoUrl,
       repoFullName,
@@ -172,26 +217,90 @@ export function classifyTriggerPayload(payload: Record<string, unknown>): Trigge
   return { act: false, reason: `No heal rule for trigger "${slug}"` };
 }
 
+export const WEBHOOK_SCOPE_HINT =
+  'GitHub OAuth is missing webhook permissions (admin:repo_hook). Disconnect and reconnect GitHub, then re-enroll the repo.';
+
+export const LOCAL_TRIGGER_HINT =
+  'Composio PR triggers need HTTPS. In another terminal run `npm run tunnel`, restart dev, then toggle Watch PRs.';
+
+function formatComposioError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const jsonStart = raw.indexOf('{');
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart)) as { error?: { message?: string } };
+      const message = parsed.error?.message;
+      if (message) return message;
+    } catch {
+      // fall through
+    }
+  }
+  return raw;
+}
+
+/** Composio rejects http:// — project webhooks must be HTTPS (ngrok, cloudflare tunnel, etc.). */
+export async function ensureComposioProjectWebhook(
+  publicUrl: string
+): Promise<{ ok: boolean; error?: string }> {
+  const base = publicUrl.trim().replace(/\/$/, '');
+  if (!base.startsWith('https://')) {
+    return {
+      ok: false,
+      error: 'Composio requires an HTTPS webhook URL. Set OPENHEAL_PUBLIC_URL to your ngrok or tunnel URL.',
+    };
+  }
+  try {
+    await registerWebhook(base);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: formatComposioError(err) };
+  }
+}
+
 /** Arm the GitHub triggers for a connected Composio user. */
 export async function armHealTriggers(
   userId: string,
-  kinds: HealTriggerKind[] = ['checkRun', 'issueOpened', 'reviewComment'],
-  repoFullName?: string
+  kinds: HealTriggerKind[] = ['prOpened'],
+  repoFullName?: string,
+  connectedAccountId?: string
 ): Promise<{ armed: string[]; failed: Array<{ slug: string; error: string }> }> {
   const composio = getComposio();
   const armed: string[] = [];
   const failed: Array<{ slug: string; error: string }> = [];
 
   const [owner, repo] = (repoFullName || '').split('/');
-  const triggerConfig = owner && repo ? { owner, repo } : {};
+  if (!owner || !repo) {
+    return {
+      armed,
+      failed: [{ slug: '*', error: 'repoFullName must be owner/repo to arm PR triggers' }],
+    };
+  }
+  const triggerConfig = { owner, repo };
 
   for (const kind of kinds) {
     const slug = HEAL_TRIGGER_SLUGS[kind];
+    // These triggers need PR/check IDs at runtime — not repo-level enrollment.
+    if ((kind === 'checkRun' || kind === 'reviewComment') && !repoFullName) {
+      failed.push({
+        slug,
+        error: `${kind} triggers require a specific PR or check context, not repo enrollment`,
+      });
+      continue;
+    }
     try {
-      await composio.triggers.create(userId, slug, { triggerConfig });
+      await composio.triggers.create(userId, slug, {
+        connectedAccountId,
+        triggerConfig,
+      });
       armed.push(slug);
     } catch (err) {
-      failed.push({ slug, error: err instanceof Error ? err.message : String(err) });
+      let message = formatComposioError(err);
+      if (/invalid webhook configuration/i.test(message)) {
+        message = `${message} Set OPENHEAL_PUBLIC_URL to a public HTTPS URL (ngrok), restart the app, then toggle Watch PRs again.`;
+      } else if (/repository .* not found/i.test(message)) {
+        message = `${message} ${WEBHOOK_SCOPE_HINT}`;
+      }
+      failed.push({ slug, error: message });
     }
   }
   return { armed, failed };

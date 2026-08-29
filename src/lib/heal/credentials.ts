@@ -29,7 +29,11 @@ export function resolveCredentials(input: HealLaunchCredentials = {}): ResolvedH
     trimKey(process.env.GITHUB_PERSONAL_ACCESS_TOKEN);
 
   const daytonaKey = trimKey(input.daytonaKey) || trimKey(process.env.DAYTONA_API_KEY);
-  const rawModel = trimKey(input.model) || process.env.OPENHEAL_LLM_MODEL || 'gpt-5.6-luna';
+  const rawModel =
+    trimKey(input.model) ||
+    process.env.TRUEFORGE_MODEL?.trim() ||
+    process.env.OPENHEAL_LLM_MODEL?.trim() ||
+    'openai/gpt-5.6-luna';
   const llmProvider = inferProvider(rawModel, openaiKey);
   const model = resolveModelForProvider(rawModel, llmProvider);
 
@@ -59,7 +63,7 @@ export function defaultModelForProvider(
     case 'openrouter':
       return 'gpt-4o';
     default:
-      return 'gpt-5.6-luna';
+      return 'openai/gpt-5.6-luna';
   }
 }
 

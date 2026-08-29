@@ -39,7 +39,7 @@ export default function LandingPage() {
               href="/app"
               className="rounded bg-ink px-3 py-1.5 text-[13px] font-medium text-paper transition-colors hover:bg-signal"
             >
-              Open the console
+              Dashboard
             </Link>
           </div>
         </nav>
@@ -48,28 +48,28 @@ export default function LandingPage() {
       {/* Hero */}
       <section className="mx-auto grid max-w-6xl items-center gap-10 px-5 py-14 lg:grid-cols-[1.05fr_1fr] lg:py-20">
         <div>
-          <p className="t-label anim-rise">Self-healing, under supervision</p>
+          <p className="t-label anim-rise">Agent swarm PR review</p>
           <h1
             className="t-display anim-rise mt-3 text-[40px] leading-[0.95] sm:text-[50px]"
             style={{ animationDelay: '0.05s' }}
           >
-            A machine wrote
+            Every PR gets
             <br />
-            this patch.
+            a real run.
             <br />
             <span className="text-signal">
-              You decide
+              BuildOps → Explorer
               <br />
-              if it ships.
+              → Diagnostic → Report
             </span>
           </h1>
           <p
             className="anim-rise mt-6 max-w-prose text-[15px] leading-relaxed text-ink-2"
             style={{ animationDelay: '0.12s' }}
           >
-            OpenHeal runs your failing suite in an isolated sandbox, finds the line
-            responsible, writes the smallest fix that works, and proves the suite
-            green against it. Then it stops and waits for you.
+            Connect GitHub and OpenHeal&apos;s agent swarm builds your app in a sandbox,
+            explores user flows, diagnoses root causes, and posts evidence on the pull request —
+            automatically on every PR you watch.
           </p>
           <div
             className="anim-rise mt-8 flex flex-wrap items-center gap-3"
@@ -79,7 +79,7 @@ export default function LandingPage() {
               href="/app"
               className="flex items-center gap-2 rounded bg-signal px-5 py-2.5 text-[14px] font-semibold text-white transition-colors hover:bg-signal-ink"
             >
-              Open the console
+              Open dashboard
               <ArrowRight className="h-4 w-4" strokeWidth={2.5} />
             </Link>
             <a
@@ -123,11 +123,11 @@ export default function LandingPage() {
         <div className="mx-auto max-w-6xl px-5 py-14">
           <h2 className="t-label">How a run works</h2>
           <p className="t-display mt-2 max-w-2xl text-[26px] leading-tight">
-            Eight phases, each one recorded.
+            Agent swarm on every pull request.
           </p>
           <p className="mt-3 max-w-prose text-[15px] leading-relaxed text-ink-2">
-            The console draws every phase to scale against elapsed time, so you can
-            see what the agents did and where the run actually spent itself.
+            BuildOps provisions the sandbox, Explorer clicks through your app, Diagnostic
+            localizes root causes, Reporter posts findings on the PR — with optional auto-fix.
           </p>
 
           <ol className="mt-9 grid gap-x-5 gap-y-7 sm:grid-cols-2 lg:grid-cols-4">

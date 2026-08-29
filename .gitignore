@@ -22,6 +22,10 @@ venv/
 __pycache__/
 *.pyc
 
+# local persistence
+.openheal-data/
+.openheal-tunnel-url
+
 # IDE / OS
 .DS_Store
 .qodo/

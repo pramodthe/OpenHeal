@@ -5,7 +5,7 @@ import { ArrowDown, Check, ChevronDown, Copy, Search, Trash2 } from 'lucide-reac
 
 export interface TerminalLogEntry {
   id: string;
-  source: 'agent' | 'sandbox' | 'qodo' | 'github_mcp' | 'system';
+  source: 'agent' | 'sandbox' | 'qodo' | 'github_mcp' | 'system' | 'trace';
   text: string;
   timestamp: string;
   level?: 'info' | 'error' | 'success' | 'warn';
@@ -23,6 +23,7 @@ const MAX_BUFFER_LINES = 5000;
 const SOURCES = [
   { id: 'ALL', label: 'All' },
   { id: 'sandbox', label: 'Sandbox' },
+  { id: 'trace', label: 'Turns' },
   { id: 'agent', label: 'Agent' },
   { id: 'qodo', label: 'Qodo' },
   { id: 'github_mcp', label: 'GitHub' },
@@ -31,6 +32,7 @@ const SOURCES = [
 /** A quiet colour rule per channel, so you can scan without reading. */
 const CHANNEL_RULE: Record<string, string> = {
   agent: 'rgb(var(--well-signal))',
+  trace: '#6b8afd',
   sandbox: 'rgb(var(--well-ink-2))',
   qodo: '#b18cf0',
   github_mcp: 'rgb(var(--well-pass))',
